@@ -2,6 +2,8 @@
 
 Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos son el [Reglamento v1.1](docs/REGLAMENTO_TRUCO_URUGUAYO_v1.1.md) y la [Especificación Funcional v1.1](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.1.md). El Reglamento prevalece para las reglas de juego.
 
+La [arquitectura de la aplicación](docs/ARQUITECTURA.md) describe los módulos, sus dependencias y el estado de implementación.
+
 El proyecto está en preparación y **todavía no es jugable**. Existen una pantalla inicial, un servidor de salud, tipos compartidos mínimos, una frontera provisional del motor y una prueba técnica de persistencia. Las reglas, el motor funcional, la mesa, la IA y las funciones online se desarrollarán en etapas posteriores. El [informe de cierre de la Etapa 1](docs/CIERRE_ETAPA_1.md) detalla el alcance y sus riesgos.
 
 ## Estructura
