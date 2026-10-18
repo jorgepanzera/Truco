@@ -5,7 +5,7 @@ type Igual<A, B> =
 type Afirmar<T extends true> = T;
 
 export type Verificaciones = [
-  Afirmar<Igual<Palo, "oros" | "copas" | "espadas" | "bastos">>,
+  Afirmar<Igual<Palo, "oro" | "copa" | "espada" | "basto">>,
   Afirmar<Igual<ValorNominal, 1 | 2 | 3 | 4 | 5 | 6 | 7 | 10 | 11 | 12>>,
   Afirmar<Igual<Modalidad, "1v1" | "2v2">>,
   Afirmar<Igual<MetaPuntos, 30 | 40>>,
@@ -23,4 +23,6 @@ export type ModalidadInvalida = Afirmar<"3v3" extends Modalidad ? true : false>;
 // @ts-expect-error La meta 50 no está permitida.
 export type MetaInvalida = Afirmar<50 extends MetaPuntos ? true : false>;
 // @ts-expect-error Una carta requiere palo y valor válidos.
-export type CartaInvalida = Afirmar<{ palo: "oros"; valor: 8 } extends Carta ? true : false>;
+export type CartaInvalida = Afirmar<{ palo: "oro"; valor: 8 } extends Carta ? true : false>;
+// @ts-expect-error Los nombres plurales no son identificadores técnicos válidos.
+export type PaloPluralInvalido = Afirmar<"oros" extends Palo ? true : false>;
