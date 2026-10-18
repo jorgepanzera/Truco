@@ -1,0 +1,16 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Provisional: solo para verificar la infraestructura de persistencia.
+model InfrastructureProbe {
+  id    Int    @id @default(autoincrement())
+  value String
+}

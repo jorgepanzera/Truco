@@ -1,0 +1,27 @@
+{
+  "name": "@truco/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@truco/game-engine": "0.0.0",
+    "@truco/shared": "0.0.0",
+    "@prisma/client": "7.10.1",
+    "@prisma/adapter-better-sqlite3": "7.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "prisma": "7.10.1"
+  },
+  "scripts": {
+    "build": "npm run db:generate && tsc --build",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "dev": "npm run build && node dist/main.js",
+    "start": "node dist/main.js",
+    "test": "npm run build && node --test dist/server.test.js",
+    "db:generate": "prisma generate",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate": "prisma migrate deploy",
+    "test:db": "npm run build && node --test dist/persistence.test.js"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "truco-uruguayo",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "npm@11.19.0",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": ">=11.0.0 <12"
+  },
+  "workspaces": [
+    "apps/web",
+    "apps/server",
+    "packages/game-engine",
+    "packages/shared"
+  ],
+  "scripts": {
+    "build": "npm run db:generate && tsc --build && npm run build --workspace @truco/web",
+    "typecheck": "npm run check:architecture && npm run typecheck:workspaces",
+    "typecheck:workspaces": "npm run db:generate && tsc --build && npm run typecheck --workspaces",
+    "check:architecture": "node --test scripts/check-architecture.test.mjs && node scripts/check-architecture.mjs",
+    "format:check": "prettier . --check",
+    "format": "prettier . --write",
+    "lint": "eslint . --max-warnings 0",
+    "check": "npm run format:check && npm run lint && npm run check:architecture && npm run typecheck:workspaces && npm run test:web && npm run test:server && npm run test:db && npm run build",
+    "dev:web": "tsc --build packages/shared packages/game-engine && npm run dev --workspace @truco/web",
+    "test:web": "npm run test --workspace @truco/web",
+    "dev:server": "npm run dev --workspace @truco/server",
+    "start:server": "npm run start --workspace @truco/server",
+    "test:server": "npm run test --workspace @truco/server",
+    "db:generate": "npm run db:generate --workspace @truco/server",
+    "db:migrate:dev": "npm run db:migrate:dev --workspace @truco/server",
+    "db:migrate": "npm run db:migrate --workspace @truco/server",
+    "test:db": "npm run test:db --workspace @truco/server"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.2"
+  }
+}
