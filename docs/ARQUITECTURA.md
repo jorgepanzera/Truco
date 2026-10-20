@@ -78,6 +78,8 @@ Sin `DATABASE_URL`, la base de desarrollo se ubica en `apps/server/prisma/dev.db
 
 `juego-cartas.ts` representa el juego de cartas de una mano preparada con cartas disponibles, jugadas con autor, baza actual, bazas resueltas y turno. `iniciarJuegoCartas` valida la estructura de la mano; `ejecutarCarta` es una transición pura con eventos o rechazo estructurado. La resolución reutiliza la jerarquía existente, compara la máxima carta por equipo, aplica la tabla de bazas del Reglamento §5.2 y la salida de §5.3. Apuestas, puntuación, relojes y retiro siguen pendientes.
 
+`envido.ts` calcula tantos y detecta Flor sin otorgarle valor ficticio. Modela la cadena de Envido, Real Envido y Falta Envido, sus aumentos, aceptación o rechazo, la adjudicación independiente de puntos y el cálculo de Falta Envido con los marcadores iniciales. `EstadoEnvido` envuelve el estado de cartas y `ejecutarCartaConEnvido` es la transición integrada: rechaza cartas mientras la cadena está pendiente y conserva el turno suspendido. Una aceptación que encuentra una Flor posible se rechaza de forma segura, porque anuncio, omisión, prioridad y resolución de Flor aún no están implementados. Truco tampoco está integrado.
+
 ## Configuración y calidad
 
 - [package.json](../package.json) declara los workspaces y los comandos comunes. [package-lock.json](../package-lock.json) fija el árbol de dependencias.

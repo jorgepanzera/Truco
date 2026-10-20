@@ -232,7 +232,8 @@ export function evaluarResultadosBazas(
   return { finalizada: true, debeAbrirBaza: false, equipoGanador: tercera ?? equipoManoOriginal };
 }
 
-function estadoBasicoValido(estado: EstadoJuegoCartas): boolean {
+/** Comprueba la coherencia estructural antes de una transición dependiente de cartas. */
+export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
   try {
     validarManoPreparada(estado.mano);
     if (
@@ -333,7 +334,8 @@ function stateLast<T>(valores: readonly T[]): T | undefined {
 
 /** Transición concreta de cartas. No admite acciones ajenas a este slice. */
 export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
-  if (!estadoBasicoValido(estado)) return rechazar("estado-invalido", "Estado de juego inválido.");
+  if (!esEstadoJuegoCartasValido(estado))
+    return rechazar("estado-invalido", "Estado de juego inválido.");
   if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
   if (!accion || accion.tipo !== "jugar-carta" || !esCarta(accion.carta))
     return rechazar("carta-invalida", "Acción o carta inválida.");
