@@ -6,14 +6,6 @@ import {
   sonCartasDisponibles,
 } from "./cartas.js";
 import { jugadorAnterior, obtenerOrdenReparto, validarMesa, type Mesa } from "./mano.js";
-import type { EstadoJuegoCartas } from "./juego-cartas.js";
-import {
-  ejecutarCarta,
-  esEstadoJuegoCartasValido,
-  type AccionJuegoCartas,
-  type EventoJuegoCartas,
-  type RechazoJuegoCartas,
-} from "./juego-cartas.js";
 
 export type TantoEnvido =
   Readonly<{ tieneFlor: false; tanto: number }> | Readonly<{ tieneFlor: true }>;
@@ -39,7 +31,28 @@ export type AdjudicacionEnvido = Readonly<{
   equipo: string;
   puntos: number;
   motivo: "aceptacion" | "rechazo" | "falta-envido";
+  respuesta: "quiero" | "no-quiero";
   historial: readonly CantoRegistrado[];
+}>;
+export type EventoEnvido =
+  | Readonly<{ tipo: "envido-iniciado"; cadena: CadenaEnvidoPendiente }>
+  | Readonly<{ tipo: "envido-aumentado"; cadena: CadenaEnvidoPendiente }>
+  | Readonly<{ tipo: "envido-aceptado" | "envido-rechazado"; adjudicacion: AdjudicacionEnvido }>;
+/** Datos de lectura canónicos que el coordinador deriva del estado de cartas. */
+export type ContextoEnvido = Readonly<{
+  mesa: Mesa;
+  manoOriginal: string;
+  muestra: Carta;
+  manos: readonly Readonly<{ jugador: string; cartas: readonly Carta[] }>[];
+  equipos: readonly string[];
+  jugadorTurno: string | null;
+  bazasCompletadas: number;
+  finalizada: boolean;
+  falta?: Readonly<{
+    meta: MetaPuntos;
+    puntajesIniciales: Readonly<Record<string, number>>;
+    desempate: boolean;
+  }>;
 }>;
 
 function exigirMano(cartas: readonly Carta[], muestra: Carta): void {
@@ -222,22 +235,21 @@ export function rechazarEnvido(cadena: CadenaEnvidoPendiente): AdjudicacionEnvid
     equipo: cadena.equipoProponente,
     puntos: cadena.valorAnteriorAceptado || 1,
     motivo: "rechazo",
+    respuesta: "no-quiero",
     historial: cadena.cantos,
   };
 }
 
-function cadenaPendienteValida(cadena: CadenaEnvidoPendiente, juego: EstadoJuegoCartas): boolean {
+function cadenaPendienteValida(cadena: CadenaEnvidoPendiente, contexto: ContextoEnvido): boolean {
   const cantos = cadena?.cantos;
   if (!Array.isArray(cantos) || cantos.length === 0) return false;
-  const equipos = juego.mano.equipos;
+  const equipos = contexto.equipos;
   if (
     cantos.some(
       (canto, i) =>
         !canto ||
         !equipos.includes(canto.equipo) ||
-        !juego.mano.mesa.jugadores.some(
-          (j) => j.id === canto.jugador && j.equipo === canto.equipo,
-        ) ||
+        !contexto.mesa.jugadores.some((j) => j.id === canto.jugador && j.equipo === canto.equipo) ||
         (i > 0 && canto.equipo === cantos[i - 1].equipo),
     )
   )
@@ -269,40 +281,44 @@ function cadenaPendienteValida(cadena: CadenaEnvidoPendiente, juego: EstadoJuego
   );
 }
 
-function estadoEnvidoValido(estado: EstadoEnvido): boolean {
-  if (!estado || !esEstadoJuegoCartasValido(estado.juego) || !Array.isArray(estado.resueltos))
-    return false;
+export function esEstadoEnvidoValido(
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
+): boolean {
+  if (!estado || !contexto || !Array.isArray(estado.resueltos)) return false;
   if (estado.pendiente && estado.resueltos.length > 0) return false;
   if (!estado.iniciado && (estado.pendiente || estado.resueltos.length > 0)) return false;
-  return !estado.pendiente || cadenaPendienteValida(estado.pendiente, estado.juego);
+  if (estado.resueltos.length > 1) return false;
+  if (estado.resueltos.length === 1 && !adjudicacionValida(estado.resueltos[0], contexto))
+    return false;
+  return !estado.pendiente || cadenaPendienteValida(estado.pendiente, contexto);
 }
 
 /** Estado de integración: conserva el turno de cartas sin alterarlo mientras responde Envido. */
-export type EstadoEnvido = Readonly<{
-  juego: EstadoJuegoCartas;
+export type EstadoEnvidoDominio = Readonly<{
   pendiente: CadenaEnvidoPendiente | null;
   resueltos: readonly AdjudicacionEnvido[];
   iniciado: boolean;
 }>;
+export type EstadoEnvido = EstadoEnvidoDominio;
 export type ResultadoEnvido =
-  | Readonly<{ aceptada: true; estado: EstadoEnvido }>
+  | Readonly<{ aceptada: true; estado: EstadoEnvido; eventos: readonly EventoEnvido[] }>
   | Readonly<{ aceptada: false; codigo: string }>;
 const fallo = (codigo: string): ResultadoEnvido => ({ aceptada: false, codigo });
-export function crearEstadoEnvido(juego: EstadoJuegoCartas): EstadoEnvido {
-  return { juego, pendiente: null, resueltos: [], iniciado: false };
+export function crearEstadoEnvido(): EstadoEnvidoDominio {
+  return { pendiente: null, resueltos: [], iniciado: false };
 }
 export function iniciarEnvido(
-  estado: EstadoEnvido,
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
   jugador: string,
   canto: CantoEnvido,
 ): ResultadoEnvido {
-  if (!estadoEnvidoValido(estado)) return fallo("estado-invalido");
-  if (!estado?.juego || !esEstadoJuegoCartasValido(estado.juego)) return fallo("estado-invalido");
+  if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
   if (!estado || estado.iniciado || estado.pendiente) return fallo("cadena-duplicada");
-  const juego = estado.juego,
-    participante = juego?.mano.mesa.jugadores.find((p) => p.id === jugador);
+  const participante = contexto.mesa.jugadores.find((p) => p.id === jugador);
   if (!participante) return fallo("jugador-inexistente");
-  if (juego.finalizada || juego.bazasCompletadas.length !== 0 || juego.jugadorTurno !== jugador)
+  if (contexto.finalizada || contexto.bazasCompletadas !== 0 || contexto.jugadorTurno !== jugador)
     return fallo("momento-invalido");
   return {
     aceptada: true,
@@ -312,38 +328,58 @@ export function iniciarEnvido(
       pendiente: iniciarCadenaEnvido(
         jugador,
         participante.equipo,
-        juego.mano.equipos.find((e) => e !== participante.equipo)!,
+        contexto.equipos.find((e) => e !== participante.equipo)!,
         canto,
       ),
     },
+    eventos: [
+      {
+        tipo: "envido-iniciado",
+        cadena: iniciarCadenaEnvido(
+          jugador,
+          participante.equipo,
+          contexto.equipos.find((e) => e !== participante.equipo)!,
+          canto,
+        ),
+      },
+    ],
   };
 }
 export function aumentarEnvidoEnJuego(
-  estado: EstadoEnvido,
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
   jugador: string,
   canto: CantoEnvido,
 ): ResultadoEnvido {
-  if (!estadoEnvidoValido(estado)) return fallo("estado-invalido");
-  if (!estado?.juego || !esEstadoJuegoCartasValido(estado.juego)) return fallo("estado-invalido");
+  if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
   if (!estado?.pendiente) return fallo("sin-cadena-pendiente");
-  if (!cadenaPendienteValida(estado.pendiente, estado.juego)) return fallo("cadena-invalida");
-  const p = estado.juego.mano.mesa.jugadores.find((x) => x.id === jugador);
+  if (!cadenaPendienteValida(estado.pendiente, contexto)) return fallo("cadena-invalida");
+  const p = contexto.mesa.jugadores.find((x) => x.id === jugador);
   if (!p) return fallo("jugador-inexistente");
   try {
     return {
       aceptada: true,
       estado: { ...estado, pendiente: aumentarEnvido(estado.pendiente, jugador, p.equipo, canto) },
+      eventos: [
+        {
+          tipo: "envido-aumentado",
+          cadena: aumentarEnvido(estado.pendiente, jugador, p.equipo, canto),
+        },
+      ],
     };
   } catch {
     return fallo("aumento-invalido");
   }
 }
-export function responderNoQuiero(estado: EstadoEnvido, jugador: string): ResultadoEnvido {
-  if (!estadoEnvidoValido(estado)) return fallo("estado-invalido");
-  if (!estado?.juego || !esEstadoJuegoCartasValido(estado.juego)) return fallo("estado-invalido");
+export function responderNoQuiero(
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
+  jugador: string,
+): ResultadoEnvido {
+  if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
   if (!estado?.pendiente) return fallo("sin-cadena-pendiente");
-  if (!cadenaPendienteValida(estado.pendiente, estado.juego)) return fallo("cadena-invalida");
-  const p = estado.juego.mano.mesa.jugadores.find((x) => x.id === jugador);
+  if (!cadenaPendienteValida(estado.pendiente, contexto)) return fallo("cadena-invalida");
+  const p = contexto.mesa.jugadores.find((x) => x.id === jugador);
   if (!p || p.equipo !== estado.pendiente.equipoRespondedor) return fallo("respondedor-invalido");
   return {
     aceptada: true,
@@ -352,84 +388,108 @@ export function responderNoQuiero(estado: EstadoEnvido, jugador: string): Result
       pendiente: null,
       resueltos: [...estado.resueltos, rechazarEnvido(estado.pendiente)],
     },
+    eventos: [{ tipo: "envido-rechazado", adjudicacion: rechazarEnvido(estado.pendiente) }],
   };
 }
 
 export function responderQuiero(
-  estado: EstadoEnvido,
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
   jugador: string,
-  manos: readonly Readonly<{ jugador: string; cartas: readonly Carta[] }>[],
-  falta?: Readonly<{
-    meta: MetaPuntos;
-    puntajesIniciales: Readonly<Record<string, number>>;
-    desempate: boolean;
-  }>,
 ): ResultadoEnvido {
-  if (!estadoEnvidoValido(estado)) return fallo("estado-invalido");
-  if (!estado?.juego || !esEstadoJuegoCartasValido(estado.juego)) return fallo("estado-invalido");
+  if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
   if (!estado?.pendiente) return fallo("sin-cadena-pendiente");
-  if (!cadenaPendienteValida(estado.pendiente, estado.juego)) return fallo("cadena-invalida");
-  const p = estado.juego.mano.mesa.jugadores.find((x) => x.id === jugador);
+  if (!cadenaPendienteValida(estado.pendiente, contexto)) return fallo("cadena-invalida");
+  const p = contexto.mesa.jugadores.find((x) => x.id === jugador);
   if (!p || p.equipo !== estado.pendiente.equipoRespondedor) return fallo("respondedor-invalido");
   const comparacion = compararTantosEnvido(
-    estado.juego.mano.mesa,
-    estado.juego.mano.manoOriginal,
-    estado.juego.mano.muestra,
-    manos,
+    contexto.mesa,
+    contexto.manoOriginal,
+    contexto.muestra,
+    contexto.manos,
   );
   if (!comparacion.aplicable) return fallo("flor-pendiente");
   const faltaActual = estado.pendiente.cantos.at(-1)!.canto === "falta-envido";
-  if (faltaActual && !falta) return fallo("falta-sin-contexto");
+  if (faltaActual && !contexto.falta) return fallo("falta-sin-contexto");
   const puntos = faltaActual
     ? calcularFaltaEnvido(
-        falta!.meta,
-        falta!.puntajesIniciales,
-        estado.juego.mano.equipos,
+        contexto.falta!.meta,
+        contexto.falta!.puntajesIniciales,
+        contexto.equipos,
         comparacion.equipoGanador!,
-        falta!.desempate,
+        contexto.falta!.desempate,
       )
     : estado.pendiente.valorAceptado;
   const resultado: AdjudicacionEnvido = {
     equipo: comparacion.equipoGanador!,
     puntos,
     motivo: faltaActual ? "falta-envido" : "aceptacion",
+    respuesta: "quiero",
     historial: estado.pendiente.cantos,
   };
   return {
     aceptada: true,
     estado: { ...estado, pendiente: null, resueltos: [...estado.resueltos, resultado] },
+    eventos: [{ tipo: "envido-aceptado", adjudicacion: resultado }],
   };
 }
 
-/** Transición pública integrada: impide saltar un Envido pendiente mediante cartas. */
-export function ejecutarCartaConEnvido(
-  estado: EstadoEnvido,
-  accion: AccionJuegoCartas,
-):
-  | Readonly<{ aceptada: true; estado: EstadoEnvido; eventos: readonly EventoJuegoCartas[] }>
-  | Readonly<{
-      aceptada: false;
-      rechazo: RechazoJuegoCartas | Readonly<{ codigo: "envido-pendiente"; mensaje: string }>;
-    }> {
-  if (!estadoEnvidoValido(estado))
-    return {
-      aceptada: false,
-      rechazo: { codigo: "estado-invalido", mensaje: "Estado de Envido inválido." },
-    };
-  if (estado.pendiente)
-    return {
-      aceptada: false,
-      rechazo: {
-        codigo: "envido-pendiente",
-        mensaje: "El Envido debe resolverse antes de jugar carta.",
-      },
-    };
-  const transicion = ejecutarCarta(estado.juego, accion, undefined);
-  return transicion.aceptada
-    ? {
-        aceptada: true,
-        estado: { ...estado, juego: transicion.estado },
-        eventos: transicion.eventos,
-      }
-    : transicion;
+function adjudicacionValida(adjudicacion: AdjudicacionEnvido, contexto: ContextoEnvido): boolean {
+  if (
+    !adjudicacion ||
+    !Array.isArray(adjudicacion.historial) ||
+    adjudicacion.historial.length === 0
+  )
+    return false;
+  const cantos = adjudicacion.historial;
+  const ultimo = cantos.at(-1)!;
+  const valores = cantos.map((c) => c.canto);
+  const valorAceptado = valores.includes("falta-envido")
+    ? 0
+    : valores.reduce((s, c) => s + aporte(c), 0);
+  const valorAnteriorAceptado =
+    ultimo.canto === "falta-envido"
+      ? valores.slice(0, -1).reduce((s, c) => s + aporte(c), 0)
+      : valorAceptado - aporte(ultimo.canto);
+  const cadena: CadenaEnvidoPendiente = {
+    proponente: ultimo.jugador,
+    equipoProponente: ultimo.equipo,
+    equipoRespondedor: contexto.equipos.find((e) => e !== ultimo.equipo)!,
+    cantos,
+    valorAceptado,
+    valorAnteriorAceptado,
+  };
+  if (!cadenaPendienteValida(cadena, contexto) || !contexto.equipos.includes(adjudicacion.equipo))
+    return false;
+  if (adjudicacion.respuesta === "no-quiero")
+    return (
+      adjudicacion.motivo === "rechazo" &&
+      adjudicacion.equipo === ultimo.equipo &&
+      adjudicacion.puntos === (valorAnteriorAceptado || 1)
+    );
+  if (adjudicacion.respuesta !== "quiero" || adjudicacion.motivo === "rechazo") return false;
+  const comparacion = compararTantosEnvido(
+    contexto.mesa,
+    contexto.manoOriginal,
+    contexto.muestra,
+    contexto.manos,
+  );
+  if (!comparacion.aplicable || adjudicacion.equipo !== comparacion.equipoGanador) return false;
+  if (ultimo.canto !== "falta-envido")
+    return adjudicacion.motivo === "aceptacion" && adjudicacion.puntos === valorAceptado;
+  if (!contexto.falta || adjudicacion.motivo !== "falta-envido") return false;
+  try {
+    return (
+      adjudicacion.puntos ===
+      calcularFaltaEnvido(
+        contexto.falta.meta,
+        contexto.falta.puntajesIniciales,
+        contexto.equipos,
+        adjudicacion.equipo,
+        contexto.falta.desempate,
+      )
+    );
+  } catch {
+    return false;
+  }
 }

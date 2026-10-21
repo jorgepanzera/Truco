@@ -4,6 +4,7 @@ export * from "./cartas.js";
 export * from "./mano.js";
 export * from "./juego-cartas.js";
 export * from "./envido.js";
+export * from "./coordinador.js";
 
 // Infraestructura de compilación; no representa comportamiento de juego.
 export const engineDependencies = [sharedPackage] as const;
