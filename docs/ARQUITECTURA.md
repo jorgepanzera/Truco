@@ -1,6 +1,6 @@
 # Arquitectura de Truco Uruguayo
 
-Este documento describe la organización del código y el estado actual de la aplicación. Para las reglas y los requisitos, consultar el [Reglamento v1.1](REGLAMENTO_TRUCO_URUGUAYO_v1.1.md) y la [Especificación Funcional v1.1](ESPECIFICACION_FUNCIONAL_TRUCO_v1.1.md); el Reglamento prevalece para las reglas de juego. El [README](../README.md) contiene instrucciones de instalación y uso.
+Este documento describe la organización del código y el estado actual de la aplicación. Para las reglas y los requisitos, consultar el [Reglamento v1.2](REGLAMENTO_TRUCO_URUGUAYO_v1.2.md) y la [Especificación Funcional v1.2](ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md); el Reglamento prevalece para las reglas de juego. Las versiones v1.1 se conservan como antecedentes. El [README](../README.md) contiene instrucciones de instalación y uso.
 
 ## Estado actual
 
@@ -78,7 +78,11 @@ Sin `DATABASE_URL`, la base de desarrollo se ubica en `apps/server/prisma/dev.db
 
 `juego-cartas.ts` representa el juego de cartas de una mano preparada con cartas disponibles, jugadas con autor, baza actual, bazas resueltas y turno. `iniciarJuegoCartas` valida la estructura de la mano; `ejecutarCarta` es una transición pura con eventos o rechazo estructurado. La resolución reutiliza la jerarquía existente, compara la máxima carta por equipo, aplica la tabla de bazas del Reglamento §5.2 y la salida de §5.3. Apuestas, puntuación, relojes y retiro siguen pendientes.
 
-`envido.ts` calcula tantos y detecta Flor sin otorgarle valor ficticio. Modela la cadena de Envido, Real Envido y Falta Envido, sus aumentos, aceptación o rechazo y adjudicaciones. `EstadoEnvidoDominio` no contiene cartas, reparto ni turnos: recibe un contexto de solo lectura derivado del estado canónico de cartas. `coordinador.ts` compone ambos dominios, bloquea cartas ante un Envido pendiente y es la entrada integrada. El estado coordinado conserva además un contexto inmutable de inicio de mano (meta, puntajes iniciales y condición de desempate), que se usa para Falta Envido y no puede ser aportado por acciones individuales. Envido valida su cadena e historial verificable; el coordinador valida cartas, contexto inicial y coherencia global. Una aceptación que encuentra una Flor posible se rechaza de forma segura, porque anuncio, omisión, prioridad y resolución de Flor aún no están implementados. Truco tampoco está integrado.
+`envido.ts` calcula tantos y detecta Flor sin otorgarle valor ficticio. Modela la cadena de Envido, Real Envido y Falta Envido, sus aumentos, aceptación o rechazo y adjudicaciones. `flor.ts` modela derechos, anuncios, desafíos, adjudicación diferida y la victoria semántica de Contra Flor al Resto. Ninguno duplica cartas, reparto ni turnos: ambos reciben contextos de solo lectura derivados del estado canónico de cartas.
+
+`coordinador.ts` compone cartas, Envido y Flor en `EstadoManoCoordinada`, que además conserva el contexto inmutable de inicio de mano y el resultado terminal excepcional de Contra Flor al Resto. Flor tiene prioridad: un anuncio válido cancela Envido pendiente sin puntos; Flor pendiente bloquea cartas y acciones de Envido. Tras Flores de ambos equipos, la siguiente carta válida consume la oportunidad de desafío; los derechos restantes pueden agotarse después y el cierre diferido se confirma desde anuncio, carta o respuesta según corresponda. Los eventos semánticos se emiten en el orden de la transición.
+
+La validación nivel B de Flor comprueba coherencia histórica deducible de anuncios, derechos, desafíos, oportunidad, cierre, adjudicaciones y terminal. El coordinador comprueba además la correspondencia entre Flor y `resultadoPartida`, la pérdida de derecho frente a la primera carta y la prioridad con Envido. No hay una reconstrucción completa de cronología porque el estado no conserva causa individual de pérdida ni instantáneas históricas de turno. Truco, timeout, marcador acumulado, persistencia de partidas y coordinación completa de partido aún no están integrados.
 
 ## Configuración y calidad
 
