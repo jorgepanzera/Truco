@@ -13,6 +13,7 @@ import {
 import {
   ejecutarCarta,
   esEstadoJuegoCartasValido,
+  finalizarManoPorMazo,
   finalizarManoPorRechazoTruco,
   type AccionJuegoCartas,
   type EstadoJuegoCartas,
@@ -80,6 +81,7 @@ export type AccionCoordinada =
   | Readonly<{ tipo: "iniciar-envido" | "aumentar-envido"; jugador: string; canto: CantoEnvido }>
   | Readonly<{ tipo: "quiero-envido" | "no-quiero-envido"; jugador: string }>
   | Readonly<{ tipo: "con-flor-quiero"; jugador: string }>
+  | Readonly<{ tipo: "irse-al-mazo"; jugador: string }>
   | Readonly<{
       tipo:
         | "proponer-truco"
@@ -96,18 +98,24 @@ export type AccionCoordinada =
 export type AdjudicacionTrucoPorBazas = Readonly<{
   equipo: string;
   puntos: 1 | 2 | 3 | 4;
-  motivo: "bazas";
+  motivo: "bazas" | "mazo";
   nivel: NivelApuestaTruco | null;
 }>;
 export type EventoTrucoAdjudicadoPorBazas = Readonly<{
   tipo: "truco-adjudicado-por-bazas";
   adjudicacion: AdjudicacionTrucoPorBazas;
 }>;
+export type EventoMazoAdjudicado = Readonly<{
+  tipo: "mazo-adjudicado";
+  adjudicacion: AdjudicacionTrucoPorBazas;
+  jugadorRetirado: string;
+}>;
 export type EventoCoordinado =
   | EventoJuegoCartas
   | import("./envido.js").EventoEnvido
   | EventoTruco
   | EventoTrucoAdjudicadoPorBazas
+  | EventoMazoAdjudicado
   | Readonly<{ tipo: string; jugador?: string }>;
 export type RechazoCoordinado = Readonly<{ codigo: string; mensaje: string }>;
 
@@ -249,9 +257,11 @@ function adjudicacionTrucoPorBazas(
   if (juego.motivoFinalizacion !== "bazas" || !juego.equipoGanador || truco.propuestaPendiente)
     return null;
   const nivel = truco.apuestaActiva?.nivel ?? null;
-  const puntos: 1 | 2 | 3 | 4 =
-    nivel === "truco" ? 2 : nivel === "retruco" ? 3 : nivel === "vale-cuatro" ? 4 : 1;
+  const puntos = puntosPorApuestaTruco(nivel);
   return { equipo: juego.equipoGanador, puntos, motivo: "bazas", nivel };
+}
+function puntosPorApuestaTruco(nivel: NivelApuestaTruco | null): 1 | 2 | 3 | 4 {
+  return nivel === "truco" ? 2 : nivel === "retruco" ? 3 : nivel === "vale-cuatro" ? 4 : 1;
 }
 export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: AccionCoordinada) {
   if (!estado || !esEstadoJuegoCartasValido(estado.juego))
@@ -297,6 +307,39 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
   if (estado.resultadoPartida)
     return rechazo("partida-finalizada", "La partida ya tiene un resultado terminal.");
   if (estado.juego.finalizada) return rechazo("mano-finalizada", "La mano ya finalizó.");
+  if (accion?.tipo === "irse-al-mazo") {
+    if (estado.juego.mano.mesa.modalidad !== "1v1")
+      return rechazo("mazo-2v2-no-implementado", "Irse al mazo en 2v2 aún no está implementado.");
+    if (estado.envido.pendiente)
+      return rechazo("envido-pendiente", "El Envido debe resolverse antes del mazo.");
+    if (estado.flor.pendiente)
+      return rechazo("flor-pendiente", "La Flor debe resolverse antes del mazo.");
+    if (estado.truco.propuestaPendiente)
+      return rechazo("truco-pendiente", "El Truco debe resolverse antes del mazo.");
+    const retirado = estado.juego.mano.mesa.jugadores.find(
+      (jugador) => jugador.id === accion.jugador,
+    );
+    if (!retirado) return rechazo("jugador-inexistente", "Jugador inexistente.");
+    const equipoGanador = estado.juego.mano.equipos.find((equipo) => equipo !== retirado.equipo)!;
+    const cierre = finalizarManoPorMazo(estado.juego, equipoGanador);
+    if (!cierre.aceptada)
+      return rechazo(cierre.rechazo.codigo, "No se pudo finalizar la mano por mazo.");
+    const nivel = estado.truco.apuestaActiva?.nivel ?? null;
+    const adjudicacion: AdjudicacionTrucoPorBazas = {
+      equipo: equipoGanador,
+      puntos: puntosPorApuestaTruco(nivel),
+      motivo: "mazo",
+      nivel,
+    };
+    return {
+      aceptada: true as const,
+      estado: { ...estado, juego: cierre.estado },
+      eventos: [
+        ...cierre.eventos,
+        { tipo: "mazo-adjudicado" as const, adjudicacion, jugadorRetirado: accion.jugador },
+      ],
+    };
+  }
   if (accion?.tipo === "con-flor-quiero") {
     const propuesta = estado.truco.propuestaPendiente;
     if (!propuesta)

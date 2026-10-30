@@ -936,3 +936,270 @@ test("Con Flor Quiero mantiene la apuesta aceptada durante Flor y la continuaci�
 test("la excepción de Con Flor Quiero no se expone por la API pública de Flor", () => {
   assert.equal("anunciarFlorPorConFlorQuiero" in motor, false);
 });
+
+test("irse al mazo 1v1 finaliza una vez y adjudica el nivel de Truco aceptado", () => {
+  const sinTruco = ejecutarAccionCoordinada(base().estado, { tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(sinTruco.aceptada, true);
+  assert.deepEqual(
+    sinTruco.eventos.map((evento) => evento.tipo),
+    ["mano-decidida-por-mazo", "mazo-adjudicado"],
+  );
+  assert.deepEqual(sinTruco.eventos[1].adjudicacion, {
+    equipo: "B",
+    puntos: 1,
+    motivo: "mazo",
+    nivel: null,
+  });
+  assert.equal(sinTruco.estado.juego.motivoFinalizacion, "mazo");
+  assert.equal(
+    ejecutarAccionCoordinada(sinTruco.estado, { tipo: "irse-al-mazo", jugador: "b" }).rechazo
+      .codigo,
+    "mano-finalizada",
+  );
+  assert.equal(
+    ejecutarAccionCoordinada(sinTruco.estado, { tipo: "proponer-truco", jugador: "b" }).rechazo
+      .codigo,
+    "mano-finalizada",
+  );
+
+  const truco = ejecutarAccionCoordinada(base().estado, { tipo: "proponer-truco", jugador: "a" });
+  const quieroTruco = ejecutarAccionCoordinada(truco.estado, {
+    tipo: "quiero-truco",
+    jugador: "b",
+  });
+  const mazoTruco = ejecutarAccionCoordinada(quieroTruco.estado, {
+    tipo: "irse-al-mazo",
+    jugador: "a",
+  });
+  assert.equal(mazoTruco.eventos[1].adjudicacion.puntos, 2);
+  const retruco = ejecutarAccionCoordinada(quieroTruco.estado, {
+    tipo: "proponer-retruco",
+    jugador: "b",
+  });
+  const quieroRetruco = ejecutarAccionCoordinada(retruco.estado, {
+    tipo: "quiero-retruco",
+    jugador: "a",
+  });
+  const mazoRetruco = ejecutarAccionCoordinada(quieroRetruco.estado, {
+    tipo: "irse-al-mazo",
+    jugador: "b",
+  });
+  assert.equal(mazoRetruco.eventos[1].adjudicacion.puntos, 3);
+  const vale = ejecutarAccionCoordinada(quieroRetruco.estado, {
+    tipo: "proponer-vale-cuatro",
+    jugador: "a",
+  });
+  const quieroVale = ejecutarAccionCoordinada(vale.estado, {
+    tipo: "quiero-vale-cuatro",
+    jugador: "b",
+  });
+  const mazoVale = ejecutarAccionCoordinada(quieroVale.estado, {
+    tipo: "irse-al-mazo",
+    jugador: "a",
+  });
+  assert.equal(mazoVale.eventos[1].adjudicacion.puntos, 4);
+});
+
+test("irse al mazo bloquea desafíos, rechaza 2v2 y no muta rechazos", () => {
+  const envido = ejecutarAccionCoordinada(base().estado, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const antesEnvido = JSON.stringify(envido.estado);
+  assert.equal(
+    ejecutarAccionCoordinada(envido.estado, { tipo: "irse-al-mazo", jugador: "a" }).rechazo.codigo,
+    "envido-pendiente",
+  );
+  assert.equal(JSON.stringify(envido.estado), antesEnvido);
+  const truco = ejecutarAccionCoordinada(base().estado, { tipo: "proponer-truco", jugador: "a" });
+  assert.equal(
+    ejecutarAccionCoordinada(truco.estado, { tipo: "irse-al-mazo", jugador: "b" }).rechazo.codigo,
+    "truco-pendiente",
+  );
+  const aceptado = ejecutarAccionCoordinada(truco.estado, { tipo: "quiero-truco", jugador: "b" });
+  const retruco = ejecutarAccionCoordinada(aceptado.estado, {
+    tipo: "proponer-retruco",
+    jugador: "b",
+  });
+  assert.equal(
+    ejecutarAccionCoordinada(retruco.estado, { tipo: "irse-al-mazo", jugador: "a" }).rechazo.codigo,
+    "truco-pendiente",
+  );
+  const retrucoAceptado = ejecutarAccionCoordinada(retruco.estado, {
+    tipo: "quiero-retruco",
+    jugador: "a",
+  });
+  const vale = ejecutarAccionCoordinada(retrucoAceptado.estado, {
+    tipo: "proponer-vale-cuatro",
+    jugador: "a",
+  });
+  assert.equal(
+    ejecutarAccionCoordinada(vale.estado, { tipo: "irse-al-mazo", jugador: "b" }).rechazo.codigo,
+    "truco-pendiente",
+  );
+  const conFlores = estadoConManos(
+    [
+      [c("oro", 1), c("oro", 3), c("oro", 6)],
+      [c("copa", 1), c("copa", 3), c("copa", 6)],
+    ],
+    c("espada", 7),
+  ).estado;
+  const florA = ejecutarAccionCoordinada(conFlores, { tipo: "anunciar-flor", jugador: "a" });
+  const florB = ejecutarAccionCoordinada(florA.estado, { tipo: "anunciar-flor", jugador: "b" });
+  const contraFlor = ejecutarAccionCoordinada(florB.estado, {
+    tipo: "proponer-contra-flor",
+    jugador: "a",
+  });
+  assert.equal(
+    ejecutarAccionCoordinada(contraFlor.estado, { tipo: "irse-al-mazo", jugador: "b" }).rechazo
+      .codigo,
+    "flor-pendiente",
+  );
+  const mesa2v2 = {
+    modalidad: "2v2",
+    jugadores: [
+      { id: "a", equipo: "A", posicion: 0 },
+      { id: "b", equipo: "B", posicion: 1 },
+      { id: "c", equipo: "A", posicion: 2 },
+      { id: "d", equipo: "B", posicion: 3 },
+    ],
+  };
+  const mano = prepararMano(mesa2v2, "d", crearMazo());
+  const estado2v2 = crearEstadoManoCoordinada(iniciarJuegoCartas(mano), {
+    metaPuntos: 40,
+    puntajesIniciales: { A: 0, B: 0 },
+    esDesempate: false,
+  });
+  assert.equal(
+    ejecutarAccionCoordinada(estado2v2, { tipo: "irse-al-mazo", jugador: "a" }).rechazo.codigo,
+    "mazo-2v2-no-implementado",
+  );
+});
+
+test("irse al mazo 1v1 es válido fuera del turno de carta", () => {
+  const { estado } = base();
+  assert.equal(estado.juego.jugadorTurno, "a");
+  const resultado = ejecutarAccionCoordinada(estado, { tipo: "irse-al-mazo", jugador: "b" });
+  assert.equal(resultado.aceptada, true);
+  assert.deepEqual(resultado.eventos, [
+    { tipo: "mano-decidida-por-mazo", equipo: "A" },
+    {
+      tipo: "mazo-adjudicado",
+      jugadorRetirado: "b",
+      adjudicacion: { equipo: "A", puntos: 1, motivo: "mazo", nivel: null },
+    },
+  ]);
+});
+
+test("irse al mazo no confunde una fase de Flor abierta sin desafío pendiente", () => {
+  const { estado } = base();
+  assert.equal(estado.flor.cerrado, false);
+  assert.equal(estado.flor.pendiente, null);
+  const resultado = ejecutarAccionCoordinada(estado, { tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(resultado.aceptada, true);
+  assert.deepEqual(resultado.eventos.at(-1).adjudicacion, {
+    equipo: "B",
+    puntos: 1,
+    motivo: "mazo",
+    nivel: null,
+  });
+});
+
+test("irse al mazo conserva la adjudicación resuelta de Envido sin reemitirla", () => {
+  const iniciado = ejecutarAccionCoordinada(baseGanadorA().estado, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const envido = ejecutarAccionCoordinada(iniciado.estado, { tipo: "quiero-envido", jugador: "b" });
+  assert.equal(envido.aceptada, true);
+  assert.equal(envido.estado.envido.resueltos.length, 1);
+  const adjudicacionPrevia = envido.estado.envido.resueltos[0];
+
+  const mazo = ejecutarAccionCoordinada(envido.estado, { tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(mazo.aceptada, true);
+  assert.equal(mazo.estado.envido, envido.estado.envido);
+  assert.deepEqual(mazo.estado.envido.resueltos, [adjudicacionPrevia]);
+  assert.deepEqual(
+    mazo.eventos.map((evento) => evento.tipo),
+    ["mano-decidida-por-mazo", "mazo-adjudicado"],
+  );
+  assert.equal(
+    mazo.eventos.some((evento) => evento.tipo.startsWith("envido-")),
+    false,
+  );
+  assert.deepEqual(mazo.eventos.at(-1).adjudicacion, {
+    equipo: "B",
+    puntos: 1,
+    motivo: "mazo",
+    nivel: null,
+  });
+});
+
+test("irse al mazo conserva la adjudicación resuelta de Flor sin reemitirla", () => {
+  const conFlores = estadoConManos(
+    [
+      [c("oro", 1), c("oro", 3), c("oro", 6)],
+      [c("copa", 1), c("copa", 3), c("copa", 6)],
+    ],
+    c("espada", 7),
+  ).estado;
+  const florA = ejecutarAccionCoordinada(conFlores, { tipo: "anunciar-flor", jugador: "a" });
+  const florB = ejecutarAccionCoordinada(florA.estado, { tipo: "anunciar-flor", jugador: "b" });
+  const desafio = ejecutarAccionCoordinada(florB.estado, {
+    tipo: "proponer-contra-flor",
+    jugador: "a",
+  });
+  const flor = ejecutarAccionCoordinada(desafio.estado, {
+    tipo: "no-quiero-contra-flor",
+    jugador: "b",
+  });
+  assert.equal(flor.aceptada, true);
+  assert.equal(flor.estado.flor.adjudicaciones.length, 2);
+  const adjudicacionesPrevias = flor.estado.flor.adjudicaciones;
+
+  const mazo = ejecutarAccionCoordinada(flor.estado, { tipo: "irse-al-mazo", jugador: "b" });
+  assert.equal(mazo.aceptada, true);
+  assert.equal(mazo.estado.flor, flor.estado.flor);
+  assert.deepEqual(mazo.estado.flor.adjudicaciones, adjudicacionesPrevias);
+  assert.deepEqual(
+    mazo.eventos.map((evento) => evento.tipo),
+    ["mano-decidida-por-mazo", "mazo-adjudicado"],
+  );
+  assert.equal(
+    mazo.eventos.some((evento) => evento.tipo.includes("flor")),
+    false,
+  );
+  assert.deepEqual(mazo.eventos.at(-1).adjudicacion, {
+    equipo: "A",
+    puntos: 1,
+    motivo: "mazo",
+    nivel: null,
+  });
+});
+
+function congelarProfundamente(valor, vistos = new Set()) {
+  if (!valor || typeof valor !== "object" || vistos.has(valor)) return valor;
+  vistos.add(valor);
+  for (const propiedad of Object.values(valor)) congelarProfundamente(propiedad, vistos);
+  return Object.freeze(valor);
+}
+
+test("irse al mazo es determinista y no muta profundamente el estado de entrada", () => {
+  const original = base().estado;
+  const antes = JSON.parse(JSON.stringify(original));
+  const accion = { tipo: "irse-al-mazo", jugador: "a" };
+  const congelado = congelarProfundamente(JSON.parse(JSON.stringify(original)));
+  const primera = ejecutarAccionCoordinada(congelado, accion);
+  const segunda = ejecutarAccionCoordinada(JSON.parse(JSON.stringify(original)), accion);
+
+  assert.equal(primera.aceptada, true);
+  assert.deepEqual(primera, segunda);
+  assert.deepEqual(original, antes);
+  assert.equal(original.juego.finalizada, false);
+  assert.equal(original.juego.jugadorTurno, "a");
+  assert.equal(original.truco.apuestaActiva, null);
+  assert.equal(original.envido.resueltos.length, 0);
+  assert.equal(original.flor.adjudicaciones.length, 0);
+});

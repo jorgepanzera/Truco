@@ -32,7 +32,7 @@ export type EstadoJuegoCartas = Readonly<{
   jugadorTurno: string | null;
   finalizada: boolean;
   equipoGanador: string | null;
-  motivoFinalizacion: "bazas" | "rechazo-truco" | null;
+  motivoFinalizacion: "bazas" | "rechazo-truco" | "mazo" | null;
 }>;
 export type ResultadoProgresivo = Readonly<{
   finalizada: boolean;
@@ -43,7 +43,8 @@ export type EventoJuegoCartas =
   | Readonly<{ tipo: "carta-jugada"; jugada: JugadaCarta }>
   | Readonly<{ tipo: "baza-resuelta"; baza: BazaCompletada }>
   | Readonly<{ tipo: "mano-decidida-por-bazas"; equipo: string }>
-  | Readonly<{ tipo: "mano-decidida-por-rechazo-truco"; equipo: string }>;
+  | Readonly<{ tipo: "mano-decidida-por-rechazo-truco"; equipo: string }>
+  | Readonly<{ tipo: "mano-decidida-por-mazo"; equipo: string }>;
 export type RechazoJuegoCartas = Readonly<{
   codigo:
     | "estado-invalido"
@@ -285,7 +286,8 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
     if (
       estado.motivoFinalizacion !== null &&
       estado.motivoFinalizacion !== "bazas" &&
-      estado.motivoFinalizacion !== "rechazo-truco"
+      estado.motivoFinalizacion !== "rechazo-truco" &&
+      estado.motivoFinalizacion !== "mazo"
     )
       return false;
     if (estado.motivoFinalizacion === "bazas") {
@@ -295,7 +297,10 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
         estado.equipoGanador !== progreso.equipoGanador
       )
         return false;
-    } else if (estado.motivoFinalizacion === "rechazo-truco") {
+    } else if (
+      estado.motivoFinalizacion === "rechazo-truco" ||
+      estado.motivoFinalizacion === "mazo"
+    ) {
       if (
         progreso.finalizada ||
         !estado.finalizada ||
@@ -459,5 +464,28 @@ export function finalizarManoPorRechazoTruco(
       motivoFinalizacion: "rechazo-truco",
     },
     eventos: [{ tipo: "mano-decidida-por-rechazo-truco", equipo: equipoGanador }],
+  };
+}
+
+/** Cierra una mano por retiro al mazo, sin fabricar bazas ni adjudicar puntos. */
+export function finalizarManoPorMazo(
+  estado: EstadoJuegoCartas,
+  equipoGanador: string,
+): ResultadoTransicion<EstadoJuegoCartas, EventoJuegoCartas, RechazoJuegoCartas> {
+  if (!esEstadoJuegoCartasValido(estado))
+    return rechazar("estado-invalido", "Estado de juego inválido.");
+  if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
+  if (!estado.mano.equipos.includes(equipoGanador))
+    return rechazar("jugador-inexistente", "Equipo ganador inválido.");
+  return {
+    aceptada: true,
+    estado: {
+      ...estado,
+      jugadorTurno: null,
+      finalizada: true,
+      equipoGanador,
+      motivoFinalizacion: "mazo",
+    },
+    eventos: [{ tipo: "mano-decidida-por-mazo", equipo: equipoGanador }],
   };
 }
