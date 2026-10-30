@@ -1,6 +1,6 @@
 # Informe técnico de cierre preparado — Etapa 1
 
-Este informe describe la base implementada y la auditoría de la Tarea 9. No es un documento normativo de las reglas. Las referencias vigentes son el [Reglamento v1.2](REGLAMENTO_TRUCO_URUGUAYO_v1.2.md) y la [Especificación Funcional v1.2](ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md); el Reglamento prevalece para las reglas. Las menciones posteriores a v1.1 describen el contexto histórico del informe. La aprobación de cierre de etapa corresponde al usuario.
+Este informe describe la base implementada y la auditoría de la Tarea 9. No es un documento normativo de las reglas. Las referencias vigentes son el [Reglamento v1.4](../REGLAMENTO_TRUCO_URUGUAYO_v1.4.md) y la [Especificación Funcional v1.2](../ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md); el Reglamento prevalece para las reglas. Las menciones posteriores a v1.1 describen el contexto histórico del informe. La aprobación de cierre de etapa corresponde al usuario.
 
 ## Objetivo y tareas
 
@@ -36,7 +36,7 @@ npm.cmd run dev:web
 npm.cmd run dev:server
 ```
 
-Los dos últimos comandos se ejecutan en terminales distintas. Vite comunica su URL, normalmente `http://localhost:5173/`; el servidor ofrece `http://127.0.0.1:3000/health`. El [README](../README.md) explica cómo activar Node portátil en PowerShell, configurar host y puerto y detener procesos.
+Los dos últimos comandos se ejecutan en terminales distintas. Vite comunica su URL, normalmente `http://localhost:5173/`; el servidor ofrece `http://127.0.0.1:3000/health`. El [README](../../README.md) explica cómo activar Node portátil en PowerShell, configurar host y puerto y detener procesos.
 
 ```powershell
 npm.cmd run check

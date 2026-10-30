@@ -2,6 +2,12 @@
 
 Este documento describe la organización del código y el estado actual de la aplicación. Para las reglas y los requisitos, consultar el [Reglamento v1.4](REGLAMENTO_TRUCO_URUGUAYO_v1.4.md) y la [Especificación Funcional v1.2](ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md); el Reglamento prevalece para las reglas de juego. Las versiones anteriores se conservan como antecedentes. El [README](../README.md) contiene instrucciones de instalación y uso.
 
+### Política de versionado documental
+
+Cada nueva versión del Reglamento debe contener todas las reglas vigentes; cada nueva versión de la Especificación Funcional debe contener todas las definiciones funcionales vigentes. Las modificaciones se integran en sus secciones temáticas: una versión nueva no puede consistir únicamente en anexos o diferencias respecto de versiones anteriores. Los documentos anteriores permanecen disponibles como antecedentes históricos y ninguna consolidación puede eliminar información normativa vigente sin justificación explícita. Los cambios normativos requieren decisiones aprobadas; una consolidación editorial no autoriza crear reglas.
+
+Solo el Reglamento v1.4 y la Especificación Funcional v1.2 son versiones normativas vigentes. Las versiones históricas y las evidencias de consolidación se conservan exclusivamente para trazabilidad; los cierres técnicos se guardan en `docs/cierres/`. Al aprobar una versión nueva, la anterior pasa a `docs/historico/` y se actualizan las referencias vigentes. Codex no debe usar una versión histórica para resolver reglas actuales cuando exista una versión vigente.
+
 ## Estado actual
 
 El proyecto es un monorepositorio TypeScript con cuatro npm workspaces: una aplicación web, un servidor y dos paquetes compartidos. Todavía no es jugable. La web muestra una pantalla inicial; el servidor ofrece un endpoint de salud; hay infraestructura provisional de persistencia y lógica de cartas y preparación de manos. La interfaz de mesa, el flujo completo de partidas, la IA y las funciones online quedan para etapas posteriores.
