@@ -1,6 +1,6 @@
 # Informe técnico de cierre preparado — Etapa 1
 
-Este informe describe la base implementada y la auditoría de la Tarea 9. No es un documento normativo de las reglas. Las referencias vigentes son el [Reglamento v1.4](../REGLAMENTO_TRUCO_URUGUAYO_v1.4.md) y la [Especificación Funcional v1.2](../ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md); el Reglamento prevalece para las reglas. Las menciones posteriores a v1.1 describen el contexto histórico del informe. La aprobación de cierre de etapa corresponde al usuario.
+Este informe describe la base implementada y la auditoría de la Tarea 9. No es un documento normativo de las reglas. Las referencias vigentes son el [Reglamento v1.4](../historico/REGLAMENTO_TRUCO_URUGUAYO_v1.4.md) y la [Especificación Funcional v1.2](../historico/ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md); el Reglamento prevalece para las reglas. Las menciones posteriores a v1.1 describen el contexto histórico del informe. La aprobación de cierre de etapa corresponde al usuario.
 
 ## Objetivo y tareas
 
