@@ -1,7 +1,7 @@
 # Especificación funcional del Truco Uruguayo — v1.2
 
 **Documento vigente:** complementa y sustituye como referencia actual a la [Especificación Funcional v1.1](ESPECIFICACION_FUNCIONAL_TRUCO_v1.1.md), que se conserva como antecedente.
-**Reglamento vigente:** [Reglamento v1.2](REGLAMENTO_TRUCO_URUGUAYO_v1.2.md). El Reglamento prevalece ante cuestiones reglamentarias.
+**Reglamento vigente:** [Reglamento v1.4](REGLAMENTO_TRUCO_URUGUAYO_v1.4.md). El Reglamento prevalece ante cuestiones reglamentarias.
 
 > Salvo los cambios expresos de esta v1.2, se mantienen todos los requisitos de v1.1. Las decisiones posteriores aprobadas prevalecen sobre requisitos anteriores contradictorios.
 

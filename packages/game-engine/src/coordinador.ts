@@ -13,6 +13,7 @@ import {
 import {
   ejecutarCarta,
   esEstadoJuegoCartasValido,
+  finalizarManoPorRechazoTruco,
   type AccionJuegoCartas,
   type EstadoJuegoCartas,
   type EventoJuegoCartas,
@@ -33,11 +34,29 @@ import {
   type ContextoFlor,
   type EstadoFlorDominio,
 } from "./flor.js";
+import {
+  crearEstadoTruco,
+  esEstadoTrucoValido,
+  proponerRetruco,
+  proponerTruco,
+  proponerValeCuatro,
+  responderQuieroRetruco,
+  responderQuieroTruco,
+  responderQuieroValeCuatro,
+  responderNoQuieroRetruco,
+  responderNoQuieroTruco,
+  responderNoQuieroValeCuatro,
+  type ContextoTruco,
+  type EstadoTrucoDominio,
+  type EventoTruco,
+  type NivelApuestaTruco,
+} from "./truco.js";
 
 export type EstadoManoCoordinada = Readonly<{
   juego: EstadoJuegoCartas;
   envido: EstadoEnvidoDominio;
   flor: EstadoFlorDominio;
+  truco: EstadoTrucoDominio;
   resultadoPartida: Readonly<{ motivo: "contra-flor-al-resto"; equipoGanador: string }> | null;
   contextoInicio: ContextoInicioMano;
 }>;
@@ -59,10 +78,36 @@ export type AccionCoordinada =
       jugador: string;
     }>
   | Readonly<{ tipo: "iniciar-envido" | "aumentar-envido"; jugador: string; canto: CantoEnvido }>
-  | Readonly<{ tipo: "quiero-envido" | "no-quiero-envido"; jugador: string }>;
+  | Readonly<{ tipo: "quiero-envido" | "no-quiero-envido"; jugador: string }>
+  | Readonly<{ tipo: "con-flor-quiero"; jugador: string }>
+  | Readonly<{
+      tipo:
+        | "proponer-truco"
+        | "quiero-truco"
+        | "no-quiero-truco"
+        | "proponer-retruco"
+        | "quiero-retruco"
+        | "no-quiero-retruco"
+        | "proponer-vale-cuatro"
+        | "quiero-vale-cuatro"
+        | "no-quiero-vale-cuatro";
+      jugador: string;
+    }>;
+export type AdjudicacionTrucoPorBazas = Readonly<{
+  equipo: string;
+  puntos: 1 | 2 | 3 | 4;
+  motivo: "bazas";
+  nivel: NivelApuestaTruco | null;
+}>;
+export type EventoTrucoAdjudicadoPorBazas = Readonly<{
+  tipo: "truco-adjudicado-por-bazas";
+  adjudicacion: AdjudicacionTrucoPorBazas;
+}>;
 export type EventoCoordinado =
   | EventoJuegoCartas
   | import("./envido.js").EventoEnvido
+  | EventoTruco
+  | EventoTrucoAdjudicadoPorBazas
   | Readonly<{ tipo: string; jugador?: string }>;
 export type RechazoCoordinado = Readonly<{ codigo: string; mensaje: string }>;
 
@@ -93,6 +138,7 @@ export function crearEstadoManoCoordinada(
     juego,
     envido: crearEstadoEnvido(),
     flor: crearEstadoFlor(),
+    truco: crearEstadoTruco(),
     resultadoPartida: null,
     contextoInicio,
   };
@@ -138,6 +184,23 @@ export function obtenerContextoFlor(
     faseFlorConfirmada,
   };
 }
+/** Contexto de solo lectura de Truco derivado de los dominios canónicos. */
+export function obtenerContextoTruco(
+  juego: EstadoJuegoCartas,
+  envido: EstadoEnvidoDominio,
+  flor: EstadoFlorDominio,
+): ContextoTruco {
+  return {
+    jugadores: juego.mano.mesa.jugadores.map((jugador) => ({
+      id: jugador.id,
+      equipo: jugador.equipo,
+    })),
+    jugadorTurno: juego.jugadorTurno,
+    manoFinalizada: juego.finalizada,
+    florPendiente: flor.pendiente !== null,
+    envidoPendiente: envido.pendiente !== null,
+  };
+}
 function rechazo(codigo: string, mensaje: string) {
   return { aceptada: false as const, rechazo: { codigo, mensaje } };
 }
@@ -149,6 +212,21 @@ function faseFlorConfirmable(estado: EstadoFlorDominio, contexto: ContextoFlor):
     (estado.oportunidadDesafioConsumida ||
       estado.historialDesafios.some((desafio) => desafio.respuesta !== null))
   );
+}
+/**
+ * §7.7 y Reglamento v1.4: la única excepción de turno para el primer anuncio
+ * queda encapsulada en la acción coordinada Con Flor Quiero.
+ */
+function anunciarFlorDentroDeConFlorQuiero(
+  estado: EstadoFlorDominio,
+  contexto: ContextoFlor,
+  jugador: string,
+) {
+  const contextoDeAnuncio =
+    estado.anuncios.length === 0 && contexto.jugadorTurno !== jugador
+      ? { ...contexto, jugadorTurno: jugador }
+      : contexto;
+  return anunciarFlor(estado, contextoDeAnuncio, jugador);
 }
 function integrarResultadoFlor(estado: EstadoManoCoordinada, flor: EstadoFlorDominio) {
   const resultadoPartida = flor.resultadoTerminal
@@ -163,6 +241,17 @@ function integrarResultadoFlor(estado: EstadoManoCoordinada, flor: EstadoFlorDom
       ? [{ tipo: "partida-terminada-contra-flor-al-resto" as const, ...resultadoPartida }]
       : [],
   };
+}
+function adjudicacionTrucoPorBazas(
+  juego: EstadoJuegoCartas,
+  truco: EstadoTrucoDominio,
+): AdjudicacionTrucoPorBazas | null {
+  if (juego.motivoFinalizacion !== "bazas" || !juego.equipoGanador || truco.propuestaPendiente)
+    return null;
+  const nivel = truco.apuestaActiva?.nivel ?? null;
+  const puntos: 1 | 2 | 3 | 4 =
+    nivel === "truco" ? 2 : nivel === "retruco" ? 3 : nivel === "vale-cuatro" ? 4 : 1;
+  return { equipo: juego.equipoGanador, puntos, motivo: "bazas", nivel };
 }
 export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: AccionCoordinada) {
   if (!estado || !esEstadoJuegoCartasValido(estado.juego))
@@ -183,6 +272,13 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
   if (!esEstadoFlorValido(estado.flor, contextoFlor))
     return rechazo("estado-invalido", "Estado de Flor invÃ¡lido.");
   if (
+    !esEstadoTrucoValido(
+      estado.truco,
+      obtenerContextoTruco(estado.juego, estado.envido, estado.flor),
+    )
+  )
+    return rechazo("estado-invalido", "Estado de Truco inválido.");
+  if (
     estado.resultadoPartida !== null
       ? estado.flor.resultadoTerminal?.equipo !== estado.resultadoPartida.equipoGanador
       : estado.flor.resultadoTerminal !== null
@@ -200,11 +296,111 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
     return rechazo("estado-invalido", "Envido pendiente incompatible con Flor anunciada.");
   if (estado.resultadoPartida)
     return rechazo("partida-finalizada", "La partida ya tiene un resultado terminal.");
+  if (estado.juego.finalizada) return rechazo("mano-finalizada", "La mano ya finalizó.");
+  if (accion?.tipo === "con-flor-quiero") {
+    const propuesta = estado.truco.propuestaPendiente;
+    if (!propuesta)
+      return rechazo("sin-propuesta-pendiente", "No hay propuesta de Truco pendiente.");
+    if (estado.flor.pendiente)
+      return rechazo("flor-pendiente", "La Flor debe resolverse antes de responder Truco.");
+    const flor = anunciarFlorDentroDeConFlorQuiero(estado.flor, contextoFlor, accion.jugador);
+    if (!flor.aceptada) return rechazo(flor.codigo, "Acción Con Flor Quiero rechazada.");
+    const contextoCierre = obtenerContextoFlor(
+      estado.juego,
+      estado.contextoInicio,
+      faseFlorConfirmable(flor.estado, contextoFlor),
+    );
+    const cierre = contextoCierre.faseFlorConfirmada
+      ? confirmarFaseFlor(flor.estado, contextoCierre)
+      : { aceptada: true as const, estado: flor.estado, eventos: [] as const };
+    if (!cierre.aceptada) return rechazo(cierre.codigo, "No se pudo confirmar la fase de Flor.");
+    const envido = estado.envido.pendiente
+      ? { ...estado.envido, pendiente: null, iniciado: true }
+      : estado.envido;
+    const contextoTruco = obtenerContextoTruco(estado.juego, envido, cierre.estado);
+    const truco =
+      propuesta.nivel === "truco"
+        ? responderQuieroTruco(estado.truco, contextoTruco, accion.jugador)
+        : propuesta.nivel === "retruco"
+          ? responderQuieroRetruco(estado.truco, contextoTruco, accion.jugador)
+          : responderQuieroValeCuatro(estado.truco, contextoTruco, accion.jugador);
+    if (!truco.aceptada) return rechazo(truco.codigo, "Respuesta de Truco rechazada.");
+    const integradoFlor = integrarResultadoFlor(estado, cierre.estado);
+    const integrado = { ...integradoFlor.estado, envido, truco: truco.estado };
+    if (
+      !esEstadoFlorValido(integrado.flor, contextoCierre) ||
+      !esEstadoTrucoValido(integrado.truco, contextoTruco)
+    )
+      return rechazo("resultado-invalido", "Resultado de Con Flor Quiero inválido.");
+    return {
+      aceptada: true as const,
+      estado: integrado,
+      eventos: [
+        ...flor.eventos,
+        ...cierre.eventos,
+        ...integradoFlor.eventos,
+        ...(estado.envido.pendiente ? [{ tipo: "envido-cancelado-por-flor" as const }] : []),
+        ...truco.eventos,
+      ],
+    };
+  }
+  if (
+    accion?.tipo === "proponer-truco" ||
+    accion?.tipo === "quiero-truco" ||
+    accion?.tipo === "no-quiero-truco" ||
+    accion?.tipo === "proponer-retruco" ||
+    accion?.tipo === "quiero-retruco" ||
+    accion?.tipo === "no-quiero-retruco" ||
+    accion?.tipo === "proponer-vale-cuatro" ||
+    accion?.tipo === "quiero-vale-cuatro" ||
+    accion?.tipo === "no-quiero-vale-cuatro"
+  ) {
+    const contextoTruco = obtenerContextoTruco(estado.juego, estado.envido, estado.flor);
+    const resultado =
+      accion.tipo === "proponer-truco"
+        ? proponerTruco(estado.truco, contextoTruco, accion.jugador)
+        : accion.tipo === "quiero-truco"
+          ? responderQuieroTruco(estado.truco, contextoTruco, accion.jugador)
+          : accion.tipo === "no-quiero-truco"
+            ? responderNoQuieroTruco(estado.truco, contextoTruco, accion.jugador)
+            : accion.tipo === "proponer-retruco"
+              ? proponerRetruco(estado.truco, contextoTruco, accion.jugador)
+              : accion.tipo === "quiero-retruco"
+                ? responderQuieroRetruco(estado.truco, contextoTruco, accion.jugador)
+                : accion.tipo === "no-quiero-retruco"
+                  ? responderNoQuieroRetruco(estado.truco, contextoTruco, accion.jugador)
+                  : accion.tipo === "proponer-vale-cuatro"
+                    ? proponerValeCuatro(estado.truco, contextoTruco, accion.jugador)
+                    : accion.tipo === "quiero-vale-cuatro"
+                      ? responderQuieroValeCuatro(estado.truco, contextoTruco, accion.jugador)
+                      : responderNoQuieroValeCuatro(estado.truco, contextoTruco, accion.jugador);
+    if (!resultado.aceptada) return rechazo(resultado.codigo, "AcciÃ³n de Truco rechazada.");
+    const eventoRechazo = resultado.eventos[0];
+    const esRechazo =
+      "adjudicacion" in eventoRechazo &&
+      eventoRechazo.manoFinalizada === true &&
+      eventoRechazo.adjudicacion.motivo === "rechazo";
+    const cierre = esRechazo
+      ? finalizarManoPorRechazoTruco(estado.juego, eventoRechazo.adjudicacion.equipo)
+      : null;
+    if (cierre && !cierre.aceptada)
+      return rechazo(cierre.rechazo.codigo, "No se pudo finalizar la mano por rechazo de Truco.");
+    const integrado = { ...estado, juego: cierre?.estado ?? estado.juego, truco: resultado.estado };
+    if (!esEstadoTrucoValido(integrado.truco, contextoTruco))
+      return rechazo("resultado-invalido", "Resultado de Truco invÃ¡lido.");
+    return {
+      aceptada: true as const,
+      estado: integrado,
+      eventos: [...resultado.eventos, ...(cierre?.eventos ?? [])],
+    };
+  }
   if (accion?.tipo === "jugar-carta") {
     if (estado.envido.pendiente)
       return rechazo("envido-pendiente", "El Envido debe resolverse antes de jugar carta.");
     if (estado.flor.pendiente)
       return rechazo("flor-pendiente", "La Flor debe resolverse antes de jugar carta.");
+    if (estado.truco.propuestaPendiente)
+      return rechazo("truco-pendiente", "El Truco debe resolverse antes de jugar carta.");
     const jugador = contextoFlor.jugadores.find(
       (participante) => participante.id === accion.jugador,
     );
@@ -245,6 +441,7 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       : { aceptada: true as const, estado: oportunidad.estado, eventos: [] as const };
     if (!cierre.aceptada) return rechazo(cierre.codigo, "No se pudo confirmar la fase de Flor.");
     const integrado = integrarResultadoFlor(estado, cierre.estado);
+    const adjudicacionTruco = adjudicacionTrucoPorBazas(resultado.estado, estado.truco);
     return {
       aceptada: true as const,
       estado: { ...integrado.estado, juego: resultado.estado },
@@ -254,6 +451,9 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
         ...cierre.eventos,
         ...integrado.eventos,
         ...resultado.eventos,
+        ...(adjudicacionTruco
+          ? [{ tipo: "truco-adjudicado-por-bazas" as const, adjudicacion: adjudicacionTruco }]
+          : []),
       ],
     };
   }

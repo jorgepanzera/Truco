@@ -1,6 +1,6 @@
 # Truco Uruguayo
 
-Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos vigentes son el [Reglamento v1.2](docs/REGLAMENTO_TRUCO_URUGUAYO_v1.2.md) y la [Especificación Funcional v1.2](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md). El Reglamento prevalece para las reglas de juego; las versiones v1.1 se conservan como antecedentes.
+Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos vigentes son el [Reglamento v1.4](docs/REGLAMENTO_TRUCO_URUGUAYO_v1.4.md) y la [Especificación Funcional v1.2](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.2.md). El Reglamento prevalece para las reglas de juego; las versiones anteriores se conservan como antecedentes.
 
 La [arquitectura de la aplicación](docs/ARQUITECTURA.md) describe los módulos, sus dependencias y el estado de implementación.
 

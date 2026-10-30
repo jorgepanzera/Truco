@@ -32,6 +32,7 @@ export type EstadoJuegoCartas = Readonly<{
   jugadorTurno: string | null;
   finalizada: boolean;
   equipoGanador: string | null;
+  motivoFinalizacion: "bazas" | "rechazo-truco" | null;
 }>;
 export type ResultadoProgresivo = Readonly<{
   finalizada: boolean;
@@ -41,7 +42,8 @@ export type ResultadoProgresivo = Readonly<{
 export type EventoJuegoCartas =
   | Readonly<{ tipo: "carta-jugada"; jugada: JugadaCarta }>
   | Readonly<{ tipo: "baza-resuelta"; baza: BazaCompletada }>
-  | Readonly<{ tipo: "mano-decidida-por-bazas"; equipo: string }>;
+  | Readonly<{ tipo: "mano-decidida-por-bazas"; equipo: string }>
+  | Readonly<{ tipo: "mano-decidida-por-rechazo-truco"; equipo: string }>;
 export type RechazoJuegoCartas = Readonly<{
   codigo:
     | "estado-invalido"
@@ -130,6 +132,7 @@ export function iniciarJuegoCartas(mano: ManoPreparada): EstadoJuegoCartas {
     jugadorTurno: canonica.manoOriginal,
     finalizada: false,
     equipoGanador: null,
+    motivoFinalizacion: null,
   };
 }
 
@@ -280,11 +283,29 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
       resultados,
     );
     if (
-      estado.finalizada !== progreso.finalizada ||
-      estado.equipoGanador !== progreso.equipoGanador
+      estado.motivoFinalizacion !== null &&
+      estado.motivoFinalizacion !== "bazas" &&
+      estado.motivoFinalizacion !== "rechazo-truco"
     )
       return false;
-    if (estado.finalizada)
+    if (estado.motivoFinalizacion === "bazas") {
+      if (
+        !progreso.finalizada ||
+        !estado.finalizada ||
+        estado.equipoGanador !== progreso.equipoGanador
+      )
+        return false;
+    } else if (estado.motivoFinalizacion === "rechazo-truco") {
+      if (
+        progreso.finalizada ||
+        !estado.finalizada ||
+        !estado.equipoGanador ||
+        !estado.mano.equipos.includes(estado.equipoGanador)
+      )
+        return false;
+    } else if (estado.finalizada || estado.equipoGanador !== null || progreso.finalizada)
+      return false;
+    if (estado.finalizada && estado.motivoFinalizacion === "bazas")
       return estado.jugadorTurno === null && estado.bazaActual.jugadas.length === 0;
     if (estado.bazaActual.salida !== salida || estado.bazaActual.jugadas.length >= jugadores.length)
       return false;
@@ -322,7 +343,9 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
       )
         return false;
     }
-    return estado.jugadorTurno === orden[estado.bazaActual.jugadas.length];
+    return estado.finalizada
+      ? estado.jugadorTurno === null
+      : estado.jugadorTurno === orden[estado.bazaActual.jugadas.length];
   } catch {
     return false;
   }
@@ -395,6 +418,7 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
         jugadorTurno: null,
         finalizada: true,
         equipoGanador: progreso.equipoGanador,
+        motivoFinalizacion: "bazas",
       },
       eventos,
     };
@@ -409,7 +433,31 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
       jugadorTurno: resultado.salidaSiguiente,
       finalizada: false,
       equipoGanador: null,
+      motivoFinalizacion: null,
     },
     eventos,
   };
 };
+
+/** Cierra una mano sin fabricar bazas cuando un Truco pendiente es rechazado. */
+export function finalizarManoPorRechazoTruco(
+  estado: EstadoJuegoCartas,
+  equipoGanador: string,
+): ResultadoTransicion<EstadoJuegoCartas, EventoJuegoCartas, RechazoJuegoCartas> {
+  if (!esEstadoJuegoCartasValido(estado))
+    return rechazar("estado-invalido", "Estado de juego inválido.");
+  if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
+  if (!estado.mano.equipos.includes(equipoGanador))
+    return rechazar("jugador-inexistente", "Equipo ganador inválido.");
+  return {
+    aceptada: true,
+    estado: {
+      ...estado,
+      jugadorTurno: null,
+      finalizada: true,
+      equipoGanador,
+      motivoFinalizacion: "rechazo-truco",
+    },
+    eventos: [{ tipo: "mano-decidida-por-rechazo-truco", equipo: equipoGanador }],
+  };
+}

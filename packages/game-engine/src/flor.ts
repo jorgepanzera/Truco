@@ -556,10 +556,11 @@ function cerrar(estado: EstadoFlorDominio, contexto: ContextoFlor): CierreFlor {
     eventos,
   };
 }
-export function anunciarFlor(
+function anunciarFlorConExcepcionDeTurno(
   estado: EstadoFlorDominio,
   contexto: ContextoFlor,
   jugador: string,
+  permitePrimerAnuncioFueraDeTurno: boolean,
 ): ResultadoFlor {
   if (!estadoCoherente(estado, contexto) || !contextoCoherente(contexto))
     return fallo("estado-flor-incoherente");
@@ -570,7 +571,11 @@ export function anunciarFlor(
   if (estado.anuncios.some((a) => a.jugador === jugador)) return fallo("flor-duplicada");
   if (estado.derechosPerdidos.includes(jugador) || participante.jugoPrimeraCarta)
     return fallo("derecho-perdido");
-  if (estado.anuncios.length === 0 && contexto.jugadorTurno !== jugador)
+  if (
+    estado.anuncios.length === 0 &&
+    contexto.jugadorTurno !== jugador &&
+    !permitePrimerAnuncioFueraDeTurno
+  )
     return fallo("primer-anuncio-fuera-de-turno");
   const cierre = cerrar(
     { ...estado, anuncios: [...estado.anuncios, { jugador, equipo: participante.equipo }] },
@@ -581,6 +586,13 @@ export function anunciarFlor(
     estado: cierre.estado,
     eventos: [{ tipo: "flor-anunciada", jugador }, ...cierre.eventos],
   };
+}
+export function anunciarFlor(
+  estado: EstadoFlorDominio,
+  contexto: ContextoFlor,
+  jugador: string,
+): ResultadoFlor {
+  return anunciarFlorConExcepcionDeTurno(estado, contexto, jugador, false);
 }
 export function perderDerechoFlor(
   estado: EstadoFlorDominio,

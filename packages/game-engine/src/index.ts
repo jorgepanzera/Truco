@@ -5,6 +5,7 @@ export * from "./mano.js";
 export * from "./juego-cartas.js";
 export * from "./envido.js";
 export * from "./flor.js";
+export * from "./truco.js";
 export * from "./coordinador.js";
 
 // Infraestructura de compilación; no representa comportamiento de juego.
