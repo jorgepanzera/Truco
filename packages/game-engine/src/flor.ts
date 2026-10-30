@@ -28,7 +28,7 @@ export type EstadoFlorDominio = Readonly<{
     tipo: DesafioFlor;
     proponente: string;
     equipo: string;
-    respuesta: "quiero" | "no-quiero" | null;
+    respuesta: "quiero" | "no-quiero" | "cancelado-por-retiro" | "rechazo-implicito-por-retiro" | null;
   }>[];
   oportunidadDesafioConsumida: boolean;
   resultadoTerminal: Readonly<{ tipo: "contra-flor-al-resto-ganada"; equipo: string }> | null;
@@ -104,6 +104,91 @@ export function tieneFlorCalculada(cartas: readonly Carta[], muestra: Carta): bo
 }
 export function identificarFlor(cartas: readonly Carta[]): string[] {
   return cartas.map(identificarCarta);
+}
+
+/** Liquidaciones de Flor causadas por retiro, separadas de Quiero/No quiero. */
+export type LiquidacionFlorPorRetiro = Readonly<{
+  causa:
+    | "rechazo-implicito-por-retiro"
+    | "propuesta-cancelada-por-retiro"
+    | "apuesta-aceptada-perdida-por-retiro"
+    | "liquidacion-ordinaria-por-retiro";
+  equipo: string;
+  puntos: number;
+}>;
+export function esLiquidacionFlorPorRetiroValida(
+  liquidacion: LiquidacionFlorPorRetiro,
+  contexto: ContextoFlor,
+): boolean {
+  return (
+    !!liquidacion &&
+    [
+      "rechazo-implicito-por-retiro",
+      "propuesta-cancelada-por-retiro",
+      "apuesta-aceptada-perdida-por-retiro",
+      "liquidacion-ordinaria-por-retiro",
+    ].includes(liquidacion.causa) &&
+    contexto.jugadores.some((jugador) => jugador.equipo === liquidacion.equipo) &&
+    Number.isInteger(liquidacion.puntos) &&
+    liquidacion.puntos >= 0
+  );
+}
+
+/** Liquida un desafío pendiente por retiro sin fingir una respuesta voluntaria. */
+export function liquidarFlorPorRetiro(
+  estado: EstadoFlorDominio,
+  contexto: ContextoFlor,
+  jugadorRetirado: string,
+): ResultadoFlor {
+  if (!esEstadoFlorValido(estado, contexto)) return fallo("estado-flor-incoherente");
+  const desafio = estado.pendiente;
+  const retirado = contexto.jugadores.find((jugador) => jugador.id === jugadorRetirado);
+  if (!retirado) return fallo("retiro-flor-inaplicable");
+  if (!desafio) {
+    if (estado.cerrado || estado.adjudicaciones.length || !estado.anuncios.length)
+      return fallo("retiro-flor-inaplicable");
+    const equipos = [...new Set(contexto.jugadores.map((jugador) => jugador.equipo))];
+    const adjudicaciones = equipos.map((equipo) => ({
+      equipo,
+      puntos: estado.anuncios.filter((anuncio) => anuncio.equipo === equipo).length * 3,
+      motivo: "sin-desafio" as const,
+    }));
+    return {
+      aceptada: true,
+      estado: {
+        ...estado,
+        cerrado: true,
+        oportunidadDesafioConsumida:
+          new Set(estado.anuncios.map((anuncio) => anuncio.equipo)).size === 2,
+        adjudicaciones,
+      },
+      eventos: [{ tipo: "flor-ordinaria-liquidada-por-retiro", jugador: jugadorRetirado }],
+    };
+  }
+  const esProponente = retirado.equipo === desafio.equipoProponente;
+  const causa: "cancelado-por-retiro" | "rechazo-implicito-por-retiro" = esProponente
+    ? "cancelado-por-retiro"
+    : "rechazo-implicito-por-retiro";
+  const historial = desafio.tipo === "contra-flor-al-resto"
+    ? estado.historialDesafios.map((registro) =>
+        registro.respuesta === null ? { ...registro, respuesta: causa } : registro,
+      )
+    : [...estado.historialDesafios, { tipo: desafio.tipo, proponente: desafio.proponente, equipo: desafio.equipoProponente, respuesta: causa }];
+  const equipos = [...new Set(contexto.jugadores.map((jugador) => jugador.equipo))];
+  const adjudicaciones = equipos.map((equipo) => ({
+    equipo,
+    puntos: esProponente
+      ? estado.anuncios.filter((anuncio) => anuncio.equipo === equipo && equipo !== retirado.equipo).length * 3
+      : equipo === desafio.equipoProponente
+        ? estado.anuncios.filter((anuncio) => anuncio.equipo === equipo).length * 3
+        : 0,
+    motivo: esProponente ? "sin-desafio" as const : "rechazo" as const,
+  }));
+  return {
+    aceptada: true,
+    estado: { ...estado, pendiente: null, cerrado: true, historialDesafios: historial, adjudicaciones, resultadoTerminal: null },
+    eventos: [{ tipo: esProponente ? "contra-flor-cancelada-por-retiro" : "contra-flor-rechazo-implicito-por-retiro", jugador: jugadorRetirado }],
+  };
 }
 
 export type ContextoFlor = Readonly<{
@@ -404,6 +489,8 @@ function estadoCoherente(estado: EstadoFlorDominio, contexto: ContextoFlor): boo
         (desafio.tipo === "contra-flor" || desafio.tipo === "contra-flor-al-resto") &&
         (desafio.respuesta === "quiero" ||
           desafio.respuesta === "no-quiero" ||
+          desafio.respuesta === "cancelado-por-retiro" ||
+          desafio.respuesta === "rechazo-implicito-por-retiro" ||
           desafio.respuesta === null) &&
         !!proponente &&
         proponente.equipo === desafio.equipo &&
@@ -498,10 +585,21 @@ function adjudicar(
       ),
       resultadoTerminal: null,
     };
-  if (desafio.respuesta === "no-quiero")
+  if (desafio.respuesta === "no-quiero" || desafio.respuesta === "rechazo-implicito-por-retiro")
     return {
       adjudicaciones: equipos.map((equipo) =>
         porEquipo(equipo, equipo === desafio.equipo ? floresPorEquipo(equipo) * 3 : 0, "rechazo"),
+      ),
+      resultadoTerminal: null,
+    };
+  if (desafio.respuesta === "cancelado-por-retiro")
+    return {
+      adjudicaciones: equipos.map((equipo) =>
+        porEquipo(
+          equipo,
+          equipo === desafio.equipo ? 0 : floresPorEquipo(equipo) * 3,
+          "sin-desafio",
+        ),
       ),
       resultadoTerminal: null,
     };

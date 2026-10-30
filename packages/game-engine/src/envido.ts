@@ -31,13 +31,17 @@ export type AdjudicacionEnvido = Readonly<{
   equipo: string;
   puntos: number;
   motivo: "aceptacion" | "rechazo" | "falta-envido";
-  respuesta: "quiero" | "no-quiero";
+  respuesta: "quiero" | "no-quiero" | "rechazo-implicito-por-retiro";
   historial: readonly CantoRegistrado[];
 }>;
 export type EventoEnvido =
   | Readonly<{ tipo: "envido-iniciado"; cadena: CadenaEnvidoPendiente }>
   | Readonly<{ tipo: "envido-aumentado"; cadena: CadenaEnvidoPendiente }>
-  | Readonly<{ tipo: "envido-aceptado" | "envido-rechazado"; adjudicacion: AdjudicacionEnvido }>;
+  | Readonly<{
+      tipo: "envido-aceptado" | "envido-rechazado" | "envido-rechazo-implicito-por-retiro";
+      adjudicacion: AdjudicacionEnvido;
+    }>
+  | Readonly<{ tipo: "envido-cancelado-por-retiro"; liquidacion: LiquidacionEnvidoPorRetiro }>;
 /** Datos de lectura canónicos que el coordinador deriva del estado de cartas. */
 export type ContextoEnvido = Readonly<{
   mesa: Mesa;
@@ -434,6 +438,53 @@ export function responderQuiero(
   };
 }
 
+/** Cierra una cadena por retiro, sin representar una respuesta humana. */
+export function liquidarEnvidoPorRetiro(
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
+  jugadorRetirado: string,
+): ResultadoEnvido {
+  if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
+  if (!estado.pendiente) return { aceptada: true, estado, eventos: [] };
+  const retirado = contexto.mesa.jugadores.find((jugador) => jugador.id === jugadorRetirado);
+  if (!retirado) return fallo("jugador-inexistente");
+  const cadena = estado.pendiente;
+  if (retirado.equipo === cadena.equipoProponente)
+    return {
+      aceptada: true,
+      estado: { ...estado, pendiente: null },
+      eventos: [{ tipo: "envido-cancelado-por-retiro", liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos: 0 } }],
+    };
+  if (retirado.equipo !== cadena.equipoRespondedor) return fallo("retiro-incompatible");
+  const base = rechazarEnvido(cadena);
+  const adjudicacion: AdjudicacionEnvido = { ...base, respuesta: "rechazo-implicito-por-retiro" };
+  return {
+    aceptada: true,
+    estado: { ...estado, pendiente: null, resueltos: [...estado.resueltos, adjudicacion] },
+    eventos: [{ tipo: "envido-rechazo-implicito-por-retiro", adjudicacion }],
+  };
+}
+
+/** Consecuencia reglamentaria explícita de un retiro; no representa un No quiero voluntario. */
+export type LiquidacionEnvidoPorRetiro = Readonly<{
+  causa: "rechazo-implicito-por-retiro" | "propuesta-cancelada-por-retiro";
+  equipo: string;
+  puntos: number;
+}>;
+export function esLiquidacionEnvidoPorRetiroValida(
+  liquidacion: LiquidacionEnvidoPorRetiro,
+  contexto: ContextoEnvido,
+): boolean {
+  return (
+    !!liquidacion &&
+    (liquidacion.causa === "rechazo-implicito-por-retiro" ||
+      liquidacion.causa === "propuesta-cancelada-por-retiro") &&
+    contexto.equipos.includes(liquidacion.equipo) &&
+    Number.isInteger(liquidacion.puntos) &&
+    liquidacion.puntos >= 0
+  );
+}
+
 function adjudicacionValida(adjudicacion: AdjudicacionEnvido, contexto: ContextoEnvido): boolean {
   if (
     !adjudicacion ||
@@ -461,7 +512,7 @@ function adjudicacionValida(adjudicacion: AdjudicacionEnvido, contexto: Contexto
   };
   if (!cadenaPendienteValida(cadena, contexto) || !contexto.equipos.includes(adjudicacion.equipo))
     return false;
-  if (adjudicacion.respuesta === "no-quiero")
+  if (adjudicacion.respuesta === "no-quiero" || adjudicacion.respuesta === "rechazo-implicito-por-retiro")
     return (
       adjudicacion.motivo === "rechazo" &&
       adjudicacion.equipo === ultimo.equipo &&

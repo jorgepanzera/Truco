@@ -12,6 +12,7 @@ import {
   responderQuieroRetruco,
   responderQuieroTruco,
   responderQuieroValeCuatro,
+  liquidarTrucoPorRetiro,
 } from "../dist/index.js";
 
 const contexto = (cambios = {}) => ({
@@ -670,4 +671,70 @@ test("aumentos directos rechazan equipo original, saltos, bloqueos y estados adu
     ).codigo,
     "estado-invalido",
   );
+});
+
+test("retiro del respondedor de Truco pendiente liquida rechazo implícito", () => {
+  const original = proponerTruco(crearEstadoTruco(), contexto(), "a").estado;
+  const antes = JSON.stringify(original);
+  const resultado = liquidarTrucoPorRetiro(original, contexto(), "b");
+  assert.equal(resultado.aceptada, true);
+  assert.equal(resultado.liquidacion.causa, "rechazo-implicito-por-retiro");
+  assert.equal(resultado.liquidacion.equipo, "A");
+  assert.equal(resultado.liquidacion.puntos, 1);
+  assert.deepEqual(resultado.eventos, [{ tipo: "truco-rechazo-implicito-por-retiro" }]);
+  assert.equal(resultado.estado.apuestaActiva, null);
+  assert.equal(JSON.stringify(original), antes);
+});
+
+test("retiro del respondedor de Retruco y Vale Cuatro paga el rechazo exacto", () => {
+  const truco = responderQuieroTruco(proponerTruco(crearEstadoTruco(), contexto(), "a").estado, contexto(), "b").estado;
+  const retruco = proponerRetruco(truco, contexto(), "b").estado;
+  const r = liquidarTrucoPorRetiro(retruco, contexto(), "a");
+  assert.equal(r.aceptada, true);
+  assert.equal(r.liquidacion.equipo, "B");
+  assert.equal(r.liquidacion.puntos, 2);
+  const aceptado = responderQuieroRetruco(retruco, contexto(), "a").estado;
+  const vale = proponerValeCuatro(aceptado, contexto(), "a").estado;
+  const v = liquidarTrucoPorRetiro(vale, contexto(), "b");
+  assert.equal(v.aceptada, true);
+  assert.equal(v.liquidacion.equipo, "A");
+  assert.equal(v.liquidacion.puntos, 3);
+  assert.equal(v.eventos[0].tipo, "truco-rechazo-implicito-por-retiro");
+});
+
+test("retiro sin propuesta expone el valor de mano aceptado", () => {
+  const inicial = crearEstadoTruco();
+  const truco = responderQuieroTruco(proponerTruco(inicial, contexto(), "a").estado, contexto(), "b").estado;
+  const retruco = responderQuieroRetruco(proponerRetruco(truco, contexto(), "b").estado, contexto(), "a").estado;
+  const vale = responderQuieroValeCuatro(proponerValeCuatro(retruco, contexto(), "a").estado, contexto(), "b").estado;
+  for (const [estado, puntos] of [[inicial, 1], [truco, 2], [retruco, 3], [vale, 4]]) {
+    const resultado = liquidarTrucoPorRetiro(estado, contexto(), "a");
+    assert.equal(resultado.aceptada, true);
+    assert.equal(resultado.liquidacion.puntos, puntos);
+    assert.equal(resultado.eventos[0].tipo, "truco-sin-propuesta-por-retiro");
+  }
+  assert.equal(liquidarTrucoPorRetiro(inicial, contexto(), "x").aceptada, false);
+});
+
+test("retiro del proponente cancela Truco, Retruco y Vale Cuatro sin rechazo", () => {
+  const trucoPendiente = proponerTruco(crearEstadoTruco(), contexto(), "a").estado;
+  const trucoAceptado = responderQuieroTruco(trucoPendiente, contexto(), "b").estado;
+  const retrucoPendiente = proponerRetruco(trucoAceptado, contexto(), "b").estado;
+  const retrucoAceptado = responderQuieroRetruco(retrucoPendiente, contexto(), "a").estado;
+  const valePendiente = proponerValeCuatro(retrucoAceptado, contexto(), "a").estado;
+  for (const [pendiente, proponente, valor] of [
+    [trucoPendiente, "a", 1],
+    [retrucoPendiente, "b", 2],
+    [valePendiente, "a", 3],
+  ]) {
+    const antes = JSON.stringify(pendiente);
+    const resultado = liquidarTrucoPorRetiro(pendiente, contexto(), proponente);
+    assert.equal(resultado.aceptada, true);
+    assert.equal(resultado.liquidacion.causa, "propuesta-cancelada-por-retiro");
+    assert.equal(resultado.liquidacion.puntos, valor);
+    assert.deepEqual(resultado.eventos, [{ tipo: "truco-cancelado-por-retiro" }]);
+    assert.equal(resultado.estado.propuestaPendiente, null);
+    assert.equal(esEstadoTrucoValido(resultado.estado, contexto()), true);
+    assert.equal(JSON.stringify(pendiente), antes);
+  }
 });

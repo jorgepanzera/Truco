@@ -2,11 +2,21 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   crearMazo,
+  cantidadActivosDelEquipo,
+  equipoSinParticipantesActivos,
+  esEstadoJuegoCartasValido,
   evaluarResultadosBazas,
+  estaActivo,
+  estaRetirado,
   ejecutarCarta,
+  finalizarManoPorMazo,
   iniciarJuegoCartas,
+  jugadoresActivos,
+  jugadoresActivosDelEquipo,
+  perteneceALaMesa,
   prepararMano,
   resolverBaza,
+  siguienteJugadorActivo,
 } from "../dist/index.js";
 
 const c = (palo, valor) => ({ palo, valor });
@@ -120,4 +130,148 @@ test("turnos y transición rechazan jugadas fuera de turno sin mutar", () => {
   estado = jugar(estado, "j0");
   assert.equal(estado.jugadorTurno, "j1");
   assert.equal(estado.bazaActual.jugadas.length, 1);
+});
+
+test("participación canónica deriva activos por asiento y valida retirados", () => {
+  const cartas = crearMazo();
+  const preparada = mano(4, cartas[12], [
+    [cartas[0], cartas[4], cartas[8]],
+    [cartas[1], cartas[5], cartas[9]],
+    [cartas[2], cartas[6], cartas[10]],
+    [cartas[3], cartas[7], cartas[11]],
+  ]);
+  const inicial = iniciarJuegoCartas(preparada);
+  assert.deepEqual(jugadoresActivos(inicial), ["j0", "j1", "j2", "j3"]);
+  assert.equal(perteneceALaMesa(inicial, "j2"), true);
+  assert.equal(estaRetirado(inicial, "j2"), false);
+  assert.equal(estaActivo(inicial, "j2"), true);
+  const retirados = { ...inicial, retirados: ["j1", "j2"], jugadorTurno: null };
+  assert.equal(esEstadoJuegoCartasValido(retirados), true);
+  assert.deepEqual(jugadoresActivos(retirados), ["j0", "j3"]);
+  assert.deepEqual(jugadoresActivosDelEquipo(retirados, "e0"), ["j0"]);
+  assert.equal(cantidadActivosDelEquipo(retirados, "e1"), 1);
+  assert.equal(
+    equipoSinParticipantesActivos({ ...retirados, retirados: ["j1", "j3"] }, "e1"),
+    true,
+  );
+  assert.equal(siguienteJugadorActivo(retirados, "j0"), "j3");
+  assert.equal(siguienteJugadorActivo(retirados, "j3"), "j0");
+  assert.equal(
+    siguienteJugadorActivo({ ...retirados, retirados: ["j0", "j1", "j2", "j3"] }, "j0"),
+    null,
+  );
+  assert.equal(esEstadoJuegoCartasValido({ ...retirados, retirados: ["j1", "j1"] }), false);
+  assert.equal(esEstadoJuegoCartasValido({ ...retirados, retirados: ["nadie"] }), false);
+  assert.deepEqual(retirados.mano, inicial.mano);
+  assert.deepEqual(retirados.cartasDisponibles, inicial.cartasDisponibles);
+});
+
+test("retirados no omiten la integridad de cartas ni del historial", () => {
+  const cartas = crearMazo();
+  const inicial = iniciarJuegoCartas(
+    mano(2, cartas[6], [
+      [cartas[0], cartas[2], cartas[4]],
+      [cartas[1], cartas[3], cartas[5]],
+    ]),
+  );
+  const base = { ...inicial, retirados: ["j1"], jugadorTurno: null };
+  assert.equal(esEstadoJuegoCartasValido(base), true);
+  assert.equal(esEstadoJuegoCartasValido({ ...base, cartasDisponibles: [] }), false);
+  const manoInventada = inicial.cartasDisponibles.map((m) => ({ ...m, cartas: [...m.cartas] }));
+  manoInventada[0] = { ...manoInventada[0], cartas: [inicial.mano.muestra] };
+  assert.equal(esEstadoJuegoCartasValido({ ...base, cartasDisponibles: manoInventada }), false);
+  const manoDuplicada = inicial.cartasDisponibles.map((m) => ({ ...m, cartas: [...m.cartas] }));
+  manoDuplicada[0] = {
+    ...manoDuplicada[0],
+    cartas: [manoDuplicada[0].cartas[0], manoDuplicada[0].cartas[0]],
+  };
+  assert.equal(esEstadoJuegoCartasValido({ ...base, cartasDisponibles: manoDuplicada }), false);
+  const cartaA = inicial.cartasDisponibles[0].cartas[0];
+  assert.equal(
+    esEstadoJuegoCartasValido({
+      ...base,
+      bazaActual: { salida: "j0", jugadas: [{ jugador: "j1", carta: cartaA }] },
+    }),
+    false,
+  );
+  assert.equal(
+    esEstadoJuegoCartasValido({
+      ...base,
+      bazaActual: { salida: "j0", jugadas: [{ jugador: "j0", carta: inicial.mano.muestra }] },
+    }),
+    false,
+  );
+  assert.equal(
+    esEstadoJuegoCartasValido({
+      ...base,
+      bazaActual: { salida: "j0", jugadas: [{ jugador: "j0", carta: cartaA }] },
+    }),
+    false,
+  );
+  const sinOriginal = inicial.cartasDisponibles.map((m) => ({ ...m, cartas: [...m.cartas] }));
+  sinOriginal[0] = { ...sinOriginal[0], cartas: sinOriginal[0].cartas.slice(1) };
+  assert.equal(esEstadoJuegoCartasValido({ ...base, cartasDisponibles: sinOriginal }), false);
+  const sinCampo = { ...base };
+  delete sinCampo.retirados;
+  assert.equal(esEstadoJuegoCartasValido(sinCampo), false);
+});
+
+test("finalizar por mazo exige y registra al retirado activo rival", () => {
+  const inicial = iniciarJuegoCartas(prepararMano(mesa(2), "j1", crearMazo()));
+  assert.equal(finalizarManoPorMazo(inicial, "e1", "j0").aceptada, true);
+  const resultado = finalizarManoPorMazo(inicial, "e1", "j0");
+  assert.deepEqual(resultado.estado.retirados, ["j0"]);
+  assert.equal(finalizarManoPorMazo(inicial, "e0", "j0").aceptada, false);
+  assert.equal(finalizarManoPorMazo(inicial, "e1", "nadie").aceptada, false);
+});
+
+test("inventario e historial se validan también al cerrar por bazas o mazo", () => {
+  let porBazas = iniciarJuegoCartas(prepararMano(mesa(2), "j1", crearMazo()));
+  while (!porBazas.finalizada) {
+    const manoJugador = porBazas.cartasDisponibles.find((m) => m.jugador === porBazas.jugadorTurno);
+    const resultado = ejecutarCarta(
+      porBazas,
+      { tipo: "jugar-carta", jugador: porBazas.jugadorTurno, carta: manoJugador.cartas[0] },
+      undefined,
+    );
+    assert.equal(resultado.aceptada, true);
+    porBazas = resultado.estado;
+  }
+  assert.equal(porBazas.motivoFinalizacion, "bazas");
+  assert.equal(esEstadoJuegoCartasValido(porBazas), true);
+  const inventarioAjeno = porBazas.cartasDisponibles.map((m) => ({
+    jugador: m.jugador,
+    cartas: m.cartas.map(() => porBazas.mano.muestra),
+  }));
+  assert.equal(
+    esEstadoJuegoCartasValido({ ...porBazas, cartasDisponibles: inventarioAjeno }),
+    false,
+  );
+  assert.equal(
+    esEstadoJuegoCartasValido({
+      ...porBazas,
+      retirados: ["j0"],
+      cartasDisponibles: inventarioAjeno,
+    }),
+    false,
+  );
+  const autorIncorrecto = JSON.parse(JSON.stringify(porBazas));
+  autorIncorrecto.bazasCompletadas[0].jugadas[0].jugador = "j1";
+  assert.equal(esEstadoJuegoCartasValido(autorIncorrecto), false);
+  const cartaDuplicada = JSON.parse(JSON.stringify(porBazas));
+  cartaDuplicada.bazasCompletadas[0].jugadas[1].carta =
+    cartaDuplicada.bazasCompletadas[0].jugadas[0].carta;
+  assert.equal(esEstadoJuegoCartasValido(cartaDuplicada), false);
+  const mazoInicial = iniciarJuegoCartas(prepararMano(mesa(2), "j1", crearMazo()));
+  const porMazo = finalizarManoPorMazo(mazoInicial, "e1", "j0");
+  assert.equal(porMazo.aceptada, true);
+  assert.equal(esEstadoJuegoCartasValido(porMazo.estado), true);
+  assert.equal(
+    esEstadoJuegoCartasValido({ ...porMazo.estado, cartasDisponibles: inventarioAjeno }),
+    false,
+  );
+  assert.equal(
+    esEstadoJuegoCartasValido({ ...mazoInicial, cartasDisponibles: inventarioAjeno }),
+    false,
+  );
 });

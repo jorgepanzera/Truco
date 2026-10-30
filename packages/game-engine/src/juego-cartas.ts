@@ -26,6 +26,8 @@ export type BazaCompletada = Readonly<{
 }>;
 export type EstadoJuegoCartas = Readonly<{
   mano: ManoPreparada;
+  /** Fuente canónica de participación; las cartas del jugador se conservan íntegras. */
+  retirados: readonly string[];
   cartasDisponibles: readonly ManoJugador[];
   bazaActual: BazaEnCurso;
   bazasCompletadas: readonly BazaCompletada[];
@@ -63,6 +65,46 @@ export type TransicionJuegoCartas = Transicion<
   EventoJuegoCartas,
   RechazoJuegoCartas
 >;
+
+/** Consultas de participación derivadas exclusivamente del estado canónico de cartas. */
+export function perteneceALaMesa(estado: EstadoJuegoCartas, jugador: string): boolean {
+  return estado.mano.mesa.jugadores.some((item) => item.id === jugador);
+}
+export function estaRetirado(estado: EstadoJuegoCartas, jugador: string): boolean {
+  return estado.retirados.includes(jugador);
+}
+export function estaActivo(estado: EstadoJuegoCartas, jugador: string): boolean {
+  return perteneceALaMesa(estado, jugador) && !estaRetirado(estado, jugador);
+}
+export function jugadoresActivos(estado: EstadoJuegoCartas): string[] {
+  return estado.mano.mesa.jugadores
+    .filter((jugador) => !estado.retirados.includes(jugador.id))
+    .sort((a, b) => a.posicion - b.posicion)
+    .map((jugador) => jugador.id);
+}
+export function jugadoresActivosDelEquipo(estado: EstadoJuegoCartas, equipo: string): string[] {
+  return estado.mano.mesa.jugadores
+    .filter((jugador) => jugador.equipo === equipo && !estado.retirados.includes(jugador.id))
+    .sort((a, b) => a.posicion - b.posicion)
+    .map((jugador) => jugador.id);
+}
+export function cantidadActivosDelEquipo(estado: EstadoJuegoCartas, equipo: string): number {
+  return jugadoresActivosDelEquipo(estado, equipo).length;
+}
+export function equipoSinParticipantesActivos(estado: EstadoJuegoCartas, equipo: string): boolean {
+  return estado.mano.equipos.includes(equipo) && cantidadActivosDelEquipo(estado, equipo) === 0;
+}
+/** Siguiente asiento activo antihorario; null expresa que ya no queda ningún participante. */
+export function siguienteJugadorActivo(estado: EstadoJuegoCartas, desde: string): string | null {
+  const orden = [...estado.mano.mesa.jugadores].sort((a, b) => a.posicion - b.posicion);
+  const indice = orden.findIndex((jugador) => jugador.id === desde);
+  if (indice < 0) throw new TypeError("El jugador no pertenece a la mesa.");
+  for (let paso = 1; paso <= orden.length; paso++) {
+    const candidato = orden[(indice + paso) % orden.length].id;
+    if (!estado.retirados.includes(candidato)) return candidato;
+  }
+  return null;
+}
 
 const copiarCarta = (carta: Carta): Carta => ({ palo: carta.palo, valor: carta.valor });
 const copiarJugada = (jugada: JugadaCarta): JugadaCarta => ({
@@ -124,6 +166,7 @@ export function iniciarJuegoCartas(mano: ManoPreparada): EstadoJuegoCartas {
   ]);
   return {
     mano: canonica,
+    retirados: [],
     cartasDisponibles: canonica.manos.map(({ jugador, cartas }) => ({
       jugador,
       cartas: cartas.map(copiarCarta),
@@ -241,6 +284,9 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
   try {
     validarManoPreparada(estado.mano);
     if (
+      !Array.isArray(estado.retirados) ||
+      new Set(estado.retirados).size !== estado.retirados.length ||
+      estado.retirados.some((jugador) => !perteneceALaMesa(estado, jugador)) ||
       !Array.isArray(estado.cartasDisponibles) ||
       !Array.isArray(estado.bazasCompletadas) ||
       !Array.isArray(estado.bazaActual?.jugadas) ||
@@ -310,8 +356,36 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
         return false;
     } else if (estado.finalizada || estado.equipoGanador !== null || progreso.finalizada)
       return false;
-    if (estado.finalizada && estado.motivoFinalizacion === "bazas")
+    if (estado.finalizada && estado.motivoFinalizacion === "bazas") {
+      const originales = new Map(
+        estado.mano.manos.map((mano) => [mano.jugador, mano.cartas.map(identificarCarta)]),
+      );
+      const usadas = new Map<string, Set<string>>();
+      for (const jugada of jugadasHistoricas) {
+        const originalesJugador = originales.get(jugada.jugador);
+        const identidad = identificarCarta(jugada.carta);
+        if (!originalesJugador?.includes(identidad) || usadas.get(jugada.jugador)?.has(identidad))
+          return false;
+        (
+          usadas.get(jugada.jugador) ??
+          (usadas.set(jugada.jugador, new Set()), usadas.get(jugada.jugador)!)
+        ).add(identidad);
+      }
+      for (const jugador of jugadores) {
+        const esperadas = originales
+          .get(jugador)!
+          .filter((carta) => !usadas.get(jugador)?.has(carta))
+          .sort();
+        const actuales = disponibles.get(jugador);
+        if (
+          !Array.isArray(actuales) ||
+          actuales.some((carta) => !esCarta(carta)) ||
+          actuales.map(identificarCarta).sort().join("|") !== esperadas.join("|")
+        )
+          return false;
+      }
       return estado.jugadorTurno === null && estado.bazaActual.jugadas.length === 0;
+    }
     if (estado.bazaActual.salida !== salida || estado.bazaActual.jugadas.length >= jugadores.length)
       return false;
     const orden = [
@@ -348,6 +422,17 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
       )
         return false;
     }
+    // A.1 sólo admite retiros no terminales como estados de consulta sin bazas
+    // parciales; todas las invariantes históricas ya fueron comprobadas arriba.
+    if (estado.retirados.length > 0 && !estado.finalizada)
+      return (
+        estado.motivoFinalizacion === null &&
+        estado.equipoGanador === null &&
+        estado.bazasCompletadas.length === 0 &&
+        estado.bazaActual.salida === estado.mano.manoOriginal &&
+        estado.bazaActual.jugadas.length === 0 &&
+        estado.jugadorTurno === null
+      );
     return estado.finalizada
       ? estado.jugadorTurno === null
       : estado.jugadorTurno === orden[estado.bazaActual.jugadas.length];
@@ -365,6 +450,8 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
   if (!esEstadoJuegoCartasValido(estado))
     return rechazar("estado-invalido", "Estado de juego inválido.");
   if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
+  if (estado.retirados.length > 0)
+    return rechazar("estado-invalido", "Las bazas con retirados aún no están implementadas.");
   if (!accion || accion.tipo !== "jugar-carta" || !esCarta(accion.carta))
     return rechazar("carta-invalida", "Acción o carta inválida.");
   const jugadorMesa = estado.mano.mesa.jugadores.find((jugador) => jugador.id === accion.jugador);
@@ -471,16 +558,27 @@ export function finalizarManoPorRechazoTruco(
 export function finalizarManoPorMazo(
   estado: EstadoJuegoCartas,
   equipoGanador: string,
+  jugadorRetirado: string,
 ): ResultadoTransicion<EstadoJuegoCartas, EventoJuegoCartas, RechazoJuegoCartas> {
   if (!esEstadoJuegoCartasValido(estado))
     return rechazar("estado-invalido", "Estado de juego inválido.");
   if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
   if (!estado.mano.equipos.includes(equipoGanador))
     return rechazar("jugador-inexistente", "Equipo ganador inválido.");
+  if (estado.mano.mesa.modalidad !== "1v1")
+    return rechazar("estado-invalido", "Irse al mazo 2v2 aún no está implementado.");
+  if (!perteneceALaMesa(estado, jugadorRetirado))
+    return rechazar("jugador-inexistente", "Jugador retirado inválido.");
+  if (!estaActivo(estado, jugadorRetirado))
+    return rechazar("estado-invalido", "El jugador ya está retirado.");
+  const retirado = estado.mano.mesa.jugadores.find((jugador) => jugador.id === jugadorRetirado)!;
+  if (retirado.equipo === equipoGanador)
+    return rechazar("jugador-inexistente", "El equipo ganador debe ser rival del retirado.");
   return {
     aceptada: true,
     estado: {
       ...estado,
+      retirados: [...estado.retirados, jugadorRetirado],
       jugadorTurno: null,
       finalizada: true,
       equipoGanador,

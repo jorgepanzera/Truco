@@ -367,3 +367,51 @@ export function responderNoQuieroValeCuatro(
 ): ResultadoTruco {
   return responderPropuesta(estado, contexto, jugador, "no-quiero", "vale-cuatro");
 }
+
+/** Resultado de una propuesta de Truco afectada por retiro, distinto de una respuesta humana. */
+export type LiquidacionTrucoPorRetiro = Readonly<{
+  causa: "rechazo-implicito-por-retiro" | "propuesta-cancelada-por-retiro";
+  equipo: string;
+  puntos: 1 | 2 | 3 | 4;
+}>;
+export function esLiquidacionTrucoPorRetiroValida(
+  liquidacion: LiquidacionTrucoPorRetiro,
+  contexto: ContextoTruco,
+): boolean {
+  return (
+    !!liquidacion &&
+    (liquidacion.causa === "rechazo-implicito-por-retiro" ||
+      liquidacion.causa === "propuesta-cancelada-por-retiro") &&
+    contexto.jugadores.some((jugador) => jugador.equipo === liquidacion.equipo) &&
+    [1, 2, 3, 4].includes(liquidacion.puntos)
+  );
+}
+
+export type ResultadoLiquidacionTrucoPorRetiro =
+  | Readonly<{
+      aceptada: true;
+      estado: EstadoTrucoDominio;
+      liquidacion: LiquidacionTrucoPorRetiro;
+      eventos: readonly Readonly<{ tipo: "truco-rechazo-implicito-por-retiro" | "truco-cancelado-por-retiro" | "truco-sin-propuesta-por-retiro" }>[];
+    }>
+  | Readonly<{ aceptada: false; codigo: string }>;
+/** Liquida una propuesta por retiro sin reutilizar la respuesta No quiero. */
+export function liquidarTrucoPorRetiro(
+  estado: EstadoTrucoDominio,
+  contexto: ContextoTruco,
+  jugadorRetirado: string,
+): ResultadoLiquidacionTrucoPorRetiro {
+  if (!esEstadoTrucoValido(estado, contexto)) return { aceptada: false, codigo: "estado-invalido" };
+  const retirado = contexto.jugadores.find((jugador) => jugador.id === jugadorRetirado);
+  if (!retirado) return { aceptada: false, codigo: "jugador-inexistente" };
+  const propuesta = estado.propuestaPendiente;
+  const nivelAceptado = estado.apuestaActiva?.nivel ?? null;
+  const puntos = nivelAceptado === "truco" ? 2 : nivelAceptado === "retruco" ? 3 : nivelAceptado === "vale-cuatro" ? 4 : 1;
+  if (!propuesta)
+    return { aceptada: true, estado, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-sin-propuesta-por-retiro" }] };
+  const proponente = contexto.jugadores.find((jugador) => jugador.id === propuesta.proponente)!;
+  if (retirado.equipo === proponente.equipo)
+    return { aceptada: true, estado: { ...estado, propuestaPendiente: null }, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-cancelado-por-retiro" }] };
+  const rechazo = propuesta.nivel === "truco" ? 1 : propuesta.nivel === "retruco" ? 2 : 3;
+  return { aceptada: true, estado: crearEstadoTruco(), liquidacion: { causa: "rechazo-implicito-por-retiro", equipo: proponente.equipo, puntos: rechazo }, eventos: [{ tipo: "truco-rechazo-implicito-por-retiro" }] };
+}

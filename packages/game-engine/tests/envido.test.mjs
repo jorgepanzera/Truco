@@ -12,6 +12,9 @@ import {
   crearMazo,
   ejecutarAccionCoordinada,
   iniciarJuegoCartas,
+  liquidarEnvidoPorRetiro,
+  obtenerContextoEnvido,
+  esEstadoEnvidoValido,
   prepararMano,
 } from "../dist/index.js";
 const c = (palo, valor) => ({ palo, valor });
@@ -63,6 +66,37 @@ test("coordinador bloquea cartas y conserva turno", () => {
   assert.equal(q.aceptada, true);
   assert.equal(q.estado.juego.jugadorTurno, "a");
   assert.equal(ejecutarAccionCoordinada(q.estado, carta).aceptada, true);
+});
+
+test("liquida Envido, Real y Falta por retiro con causa explícita e inmutabilidad", () => {
+  for (const canto of ["envido", "real-envido", "falta-envido"]) {
+    const iniciado = ejecutarAccionCoordinada(base().estado, { tipo: "iniciar-envido", jugador: "a", canto });
+    const contexto = obtenerContextoEnvido(iniciado.estado.juego, iniciado.estado.contextoInicio);
+    const antes = JSON.stringify(iniciado.estado.envido);
+    const rechazo = liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "b");
+    assert.equal(rechazo.aceptada, true);
+    assert.equal(rechazo.eventos[0].tipo, "envido-rechazo-implicito-por-retiro");
+    assert.equal(rechazo.estado.resueltos[0].respuesta, "rechazo-implicito-por-retiro");
+    assert.equal(rechazo.estado.resueltos[0].puntos, canto === "envido" ? 1 : canto === "real-envido" ? 1 : 1);
+    assert.equal(esEstadoEnvidoValido(rechazo.estado, contexto), true);
+    assert.equal(JSON.stringify(iniciado.estado.envido), antes);
+    const cancelado = liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "a");
+    assert.equal(cancelado.aceptada, true);
+    assert.equal(cancelado.eventos[0].tipo, "envido-cancelado-por-retiro");
+    assert.equal(cancelado.estado.resueltos.length, 0);
+    assert.equal(esEstadoEnvidoValido(cancelado.estado, contexto), true);
+  }
+});
+
+test("retiro conserva Envido resuelto y rechaza jugador incompatible", () => {
+  const iniciado = ejecutarAccionCoordinada(base().estado, { tipo: "iniciar-envido", jugador: "a", canto: "envido" });
+  const resuelto = ejecutarAccionCoordinada(iniciado.estado, { tipo: "quiero-envido", jugador: "b" });
+  const contexto = obtenerContextoEnvido(resuelto.estado.juego, resuelto.estado.contextoInicio);
+  const conservado = liquidarEnvidoPorRetiro(resuelto.estado.envido, contexto, "a");
+  assert.equal(conservado.aceptada, true);
+  assert.equal(conservado.estado, resuelto.estado.envido);
+  assert.deepEqual(conservado.eventos, []);
+  assert.equal(liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "x").aceptada, false);
 });
 test("coordinador detecta estados adulterados", () => {
   const { estado } = base();
