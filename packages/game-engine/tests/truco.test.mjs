@@ -27,9 +27,27 @@ const contexto = (cambios = {}) => ({
   ...cambios,
 });
 
+const propuestaHistorica = (
+  orden,
+  nivel,
+  proponente,
+  equipoProponente,
+  nivelAceptadoAnterior,
+  respuesta,
+  respondedor,
+) => ({
+  orden,
+  nivel,
+  proponente,
+  equipoProponente,
+  nivelAceptadoAnterior,
+  respuesta,
+  ...(respondedor ? { respondedor } : {}),
+});
+
 test("inicializa Truco sin propuesta ni apuesta activa", () => {
   const estado = crearEstadoTruco();
-  assert.deepEqual(estado, { apuestaActiva: null, propuestaPendiente: null });
+  assert.deepEqual(estado, { apuestaActiva: null, propuestaPendiente: null, historialPropuestas: [] });
   assert.equal(esEstadoTrucoValido(estado), true);
 });
 
@@ -118,6 +136,7 @@ test("el equipo receptor puede querer Truco fuera de turno", () => {
   assert.deepEqual(r.estado, {
     apuestaActiva: { nivel: "truco", equipoAceptante: "B" },
     propuestaPendiente: null,
+    historialPropuestas: [propuestaHistorica(1, "truco", "a", "A", null, "quiero")],
   });
   assert.deepEqual(r.eventos, [
     {
@@ -131,13 +150,18 @@ test("el equipo receptor puede querer Truco fuera de turno", () => {
   assert.deepEqual(pendiente, {
     apuestaActiva: null,
     propuestaPendiente: { nivel: "truco", proponente: "a" },
+    historialPropuestas: [propuestaHistorica(1, "truco", "a", "A", null, null)],
   });
 });
 
 test("No quiero adjudica un punto al proponente y resuelve semánticamente la mano", () => {
   const r = responderNoQuieroTruco(propuestaPendiente(), contexto(), "b");
   assert.equal(r.aceptada, true);
-  assert.deepEqual(r.estado, crearEstadoTruco());
+  assert.deepEqual(r.estado, {
+    apuestaActiva: null,
+    propuestaPendiente: null,
+    historialPropuestas: [propuestaHistorica(1, "truco", "a", "A", null, "no-quiero", "b")],
+  });
   assert.deepEqual(r.eventos, [
     {
       tipo: "truco-rechazado",
@@ -232,9 +256,13 @@ test("la propuesta es determinista e invalida estados o contextos adulterados", 
   );
   assert.equal(
     esEstadoTrucoValido({
-      apuestaActiva: { nivel: "retruco", equipoAceptante: "B" },
+      apuestaActiva: { nivel: "retruco", equipoAceptante: "A" },
       propuestaPendiente: null,
-    }),
+      historialPropuestas: [
+        propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+        propuestaHistorica(2, "retruco", "b", "B", "truco", "quiero"),
+      ],
+    }, contexto()),
     true,
   );
   assert.equal(
@@ -282,6 +310,10 @@ test("Retruco lo propone cualquier integrante del equipo que aceptó Truco", () 
   assert.deepEqual(fueraDeTurno.estado, {
     apuestaActiva: { nivel: "truco", equipoAceptante: "B" },
     propuestaPendiente: { nivel: "retruco", proponente: "b2" },
+    historialPropuestas: [
+      propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+      propuestaHistorica(2, "retruco", "b2", "B", "truco", null),
+    ],
   });
   assert.deepEqual(fueraDeTurno.eventos, [
     {
@@ -294,10 +326,11 @@ test("Retruco lo propone cualquier integrante del equipo que aceptó Truco", () 
 });
 
 test("Vale Cuatro lo propone cualquier integrante del equipo que aceptó Retruco", () => {
-  const estado = {
-    apuestaActiva: { nivel: "retruco", equipoAceptante: "A" },
-    propuestaPendiente: null,
-  };
+  const estado = responderQuieroRetruco(
+    proponerRetruco(trucoAceptado(), contexto(), "b").estado,
+    contexto(),
+    "a",
+  ).estado;
   const enTurno = proponerValeCuatro(estado, contextoDosContraDos({ jugadorTurno: "a" }), "a");
   const fueraDeTurno = proponerValeCuatro(
     estado,
@@ -370,11 +403,12 @@ function retrucoPendiente() {
 }
 
 function valeCuatroPendiente() {
-  const r = proponerValeCuatro(
-    { apuestaActiva: { nivel: "retruco", equipoAceptante: "A" }, propuestaPendiente: null },
+  const aceptado = responderQuieroRetruco(
+    proponerRetruco(trucoAceptado(), contexto(), "b").estado,
     contexto(),
     "a",
-  );
+  ).estado;
+  const r = proponerValeCuatro(aceptado, contexto(), "a");
   assert.equal(r.aceptada, true);
   return r.estado;
 }
@@ -386,6 +420,10 @@ test("Quiero Retruco actualiza el equipo aceptante sin adjudicar puntos", () => 
   assert.deepEqual(r.estado, {
     apuestaActiva: { nivel: "retruco", equipoAceptante: "A" },
     propuestaPendiente: null,
+    historialPropuestas: [
+      propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+      propuestaHistorica(2, "retruco", "b", "B", "truco", "quiero"),
+    ],
   });
   assert.equal(r.eventos[0].tipo, "retruco-aceptado");
   assert.deepEqual(pendiente.apuestaActiva, { nivel: "truco", equipoAceptante: "B" });
@@ -394,7 +432,14 @@ test("Quiero Retruco actualiza el equipo aceptante sin adjudicar puntos", () => 
 test("No quiero Retruco adjudica dos puntos y finaliza semánticamente la mano", () => {
   const r = responderNoQuieroRetruco(retrucoPendiente(), contexto(), "a");
   assert.equal(r.aceptada, true);
-  assert.deepEqual(r.estado, crearEstadoTruco());
+  assert.deepEqual(r.estado, {
+    apuestaActiva: { nivel: "truco", equipoAceptante: "B" },
+    propuestaPendiente: null,
+    historialPropuestas: [
+      propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+      propuestaHistorica(2, "retruco", "b", "B", "truco", "no-quiero", "a"),
+    ],
+  });
   assert.deepEqual(r.eventos[0], {
     tipo: "retruco-rechazado",
     propuesta: { nivel: "retruco", proponente: "b" },
@@ -501,6 +546,11 @@ test("secuencias completas conservan la escalera, valores y ausencia de adjudica
   assert.deepEqual(valeCuatroQuerido.estado, {
     apuestaActiva: { nivel: "vale-cuatro", equipoAceptante: "B" },
     propuestaPendiente: null,
+    historialPropuestas: [
+      propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+      propuestaHistorica(2, "retruco", "b", "B", "truco", "quiero"),
+      propuestaHistorica(3, "vale-cuatro", "a", "A", "retruco", "quiero"),
+    ],
   });
   assert.equal(
     proponerRetruco(valeCuatroQuerido.estado, contexto(), "b").codigo,
@@ -590,6 +640,10 @@ test("Retruco responde y acepta implícitamente Truco en una transición atómic
   assert.deepEqual(r.estado, {
     apuestaActiva: { nivel: "truco", equipoAceptante: "B" },
     propuestaPendiente: { nivel: "retruco", proponente: "b2" },
+    historialPropuestas: [
+      propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+      propuestaHistorica(2, "retruco", "b2", "B", "truco", null),
+    ],
   });
   assert.deepEqual(r.eventos, [
     {
@@ -614,6 +668,11 @@ test("Vale Cuatro responde y acepta implícitamente Retruco, incluso fuera de tu
   assert.deepEqual(r.estado, {
     apuestaActiva: { nivel: "retruco", equipoAceptante: "A" },
     propuestaPendiente: { nivel: "vale-cuatro", proponente: "a2" },
+    historialPropuestas: [
+      propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+      propuestaHistorica(2, "retruco", "b", "B", "truco", "quiero"),
+      propuestaHistorica(3, "vale-cuatro", "a2", "A", "retruco", null),
+    ],
   });
   assert.equal(r.eventos[0].tipo, "retruco-aceptado");
   assert.equal(r.eventos[1].tipo, "vale-cuatro-propuesto");
@@ -737,4 +796,92 @@ test("retiro del proponente cancela Truco, Retruco y Vale Cuatro sin rechazo", (
     assert.equal(esEstadoTrucoValido(resultado.estado, contexto()), true);
     assert.equal(JSON.stringify(pendiente), antes);
   }
+});
+
+test("el historial persistente registra la escalera completa y sus respuestas", () => {
+  const truco = proponerTruco(crearEstadoTruco(), contexto(), "a").estado;
+  const retruco = proponerRetruco(truco, contexto(), "b").estado;
+  const vale = proponerValeCuatro(retruco, contexto(), "a").estado;
+  assert.deepEqual(vale.historialPropuestas, [
+    propuestaHistorica(1, "truco", "a", "A", null, "quiero"),
+    propuestaHistorica(2, "retruco", "b", "B", "truco", "quiero"),
+    propuestaHistorica(3, "vale-cuatro", "a", "A", "retruco", null),
+  ]);
+  const aceptado = responderQuieroValeCuatro(vale, contexto(), "b").estado;
+  assert.equal(aceptado.historialPropuestas[2].respuesta, "quiero");
+  assert.equal(esEstadoTrucoValido(aceptado, contexto()), true);
+});
+
+test("el historial conserva rechazos voluntarios e implÃ­citos y cancelaciones por retiro", () => {
+  const trucoNo = responderNoQuieroTruco(propuestaPendiente(), contexto(), "b").estado;
+  const retrucoNo = responderNoQuieroRetruco(retrucoPendiente(), contexto(), "a").estado;
+  const valeNo = responderNoQuieroValeCuatro(valeCuatroPendiente(), contexto(), "b").estado;
+  assert.deepEqual(
+    [trucoNo, retrucoNo, valeNo].map((estado) => estado.historialPropuestas.at(-1).respuesta),
+    ["no-quiero", "no-quiero", "no-quiero"],
+  );
+  const implicito = liquidarTrucoPorRetiro(propuestaPendiente(), contexto(), "b").estado;
+  const cancelado = liquidarTrucoPorRetiro(propuestaPendiente(), contexto(), "a").estado;
+  assert.equal(implicito.historialPropuestas[0].respuesta, "rechazo-implicito-por-retiro");
+  assert.equal(cancelado.historialPropuestas[0].respuesta, "cancelada-por-retiro");
+  assert.equal(esEstadoTrucoValido(implicito, contexto()), true);
+  assert.equal(esEstadoTrucoValido(cancelado, contexto()), true);
+});
+
+test("el validador rechaza historiales adulterados o incoherentes con propuesta y apuesta", () => {
+  const pendiente = propuestaPendiente();
+  const historial = pendiente.historialPropuestas;
+  for (const entrada of [
+    { ...historial[0], orden: 2 },
+    { ...historial[0], nivel: "retruco" },
+    { ...historial[0], equipoProponente: "B" },
+    { ...historial[0], proponente: "b" },
+    { ...historial[0], respuesta: "quiero" },
+  ]) {
+    assert.equal(esEstadoTrucoValido({ ...pendiente, historialPropuestas: [entrada] }, contexto()), false);
+  }
+  assert.equal(
+    esEstadoTrucoValido({ ...pendiente, propuestaPendiente: null }, contexto()),
+    false,
+  );
+  const aceptado = trucoAceptado();
+  assert.equal(
+    esEstadoTrucoValido(
+      { ...aceptado, apuestaActiva: { nivel: "retruco", equipoAceptante: "A" } },
+      contexto(),
+    ),
+    false,
+  );
+  const retruco = retrucoPendiente();
+  assert.equal(
+    esEstadoTrucoValido(
+      {
+        ...retruco,
+        historialPropuestas: [
+          retruco.historialPropuestas[0],
+          { ...retruco.historialPropuestas[1], equipoProponente: "A" },
+        ],
+      },
+      contexto(),
+    ),
+    false,
+  );
+  const rechazado = responderNoQuieroTruco(propuestaPendiente(), contexto(), "b").estado;
+  assert.equal(
+    esEstadoTrucoValido(
+      {
+        ...rechazado,
+        historialPropuestas: [{ ...rechazado.historialPropuestas[0], respondedor: "a" }],
+      },
+      contexto(),
+    ),
+    false,
+  );
+});
+
+test("una respuesta terminal del historial no permite reiniciar ni prolongar la secuencia", () => {
+  const rechazado = responderNoQuieroTruco(propuestaPendiente(), contexto(), "b").estado;
+  assert.equal(proponerTruco(rechazado, contexto(), "a").codigo, "secuencia-finalizada");
+  const cancelado = liquidarTrucoPorRetiro(propuestaPendiente(), contexto(), "a").estado;
+  assert.equal(proponerRetruco(cancelado, contexto(), "b").codigo, "secuencia-finalizada");
 });

@@ -19,9 +19,31 @@ export type PropuestaTrucoPendiente = Readonly<{
   nivel: NivelApuestaTruco;
   proponente: string;
 }>;
+export type RespuestaPropuestaTruco =
+  | "quiero"
+  | "no-quiero"
+  | "rechazo-implicito-por-retiro"
+  | "cancelada-por-retiro"
+  | null;
+type BaseHistorialPropuestaTruco = Readonly<{
+  orden: 1 | 2 | 3;
+  nivel: NivelApuestaTruco;
+  proponente: string;
+  equipoProponente: string;
+  nivelAceptadoAnterior: NivelApuestaTruco | null;
+}>;
+export type HistorialPropuestaTruco =
+  | (BaseHistorialPropuestaTruco &
+      Readonly<{
+        respuesta: null | "quiero" | "cancelada-por-retiro";
+      }>)
+  | (BaseHistorialPropuestaTruco & Readonly<{ respuesta: "no-quiero"; respondedor: string }>)
+  | (BaseHistorialPropuestaTruco &
+      Readonly<{ respuesta: "rechazo-implicito-por-retiro"; jugadorRetirado: string }>);
 export type EstadoTrucoDominio = Readonly<{
   apuestaActiva: ApuestaTrucoActiva | null;
   propuestaPendiente: PropuestaTrucoPendiente | null;
+  historialPropuestas: readonly HistorialPropuestaTruco[];
 }>;
 
 export type EstadoTruco = EstadoTrucoDominio;
@@ -54,7 +76,7 @@ export type ResultadoTruco =
   | Readonly<{ aceptada: false; codigo: string }>;
 
 export function crearEstadoTruco(): EstadoTrucoDominio {
-  return { apuestaActiva: null, propuestaPendiente: null };
+  return { apuestaActiva: null, propuestaPendiente: null, historialPropuestas: [] };
 }
 
 function esContextoTrucoValido(contexto: ContextoTruco | null | undefined): boolean {
@@ -119,37 +141,112 @@ export function esEstadoTrucoValido(
   contexto?: ContextoTruco | null,
 ): boolean {
   if (!estado) return false;
-  if (!estado.apuestaActiva) {
-    if (!estado.propuestaPendiente) return !contexto || esContextoTrucoValido(contexto);
-    return (
-      estado.propuestaPendiente.nivel === "truco" &&
-      !!estado.propuestaPendiente.proponente &&
-      (!contexto ||
-        (esContextoTrucoValido(contexto) &&
-          !contexto.manoFinalizada &&
-          contexto.jugadores.some(
-            (jugador) => jugador.id === estado.propuestaPendiente!.proponente,
-          )))
-    );
+  if (!Array.isArray(estado.historialPropuestas)) return false;
+  const historial = estado.historialPropuestas;
+  if (historial.length > 3) return false;
+  if (contexto && !esContextoTrucoValido(contexto)) return false;
+  let ultimoAceptado: HistorialPropuestaTruco | null = null;
+  for (const [indice, entrada] of historial.entries()) {
+    const nivel = indice === 0 ? "truco" : indice === 1 ? "retruco" : "vale-cuatro";
+    if (
+      !entrada ||
+      entrada.orden !== indice + 1 ||
+      entrada.nivel !== nivel ||
+      !entrada.proponente ||
+      !entrada.equipoProponente ||
+      entrada.nivelAceptadoAnterior !== (ultimoAceptado?.nivel ?? null) ||
+      (indice > 0 && entrada.equipoProponente === historial[indice - 1]!.equipoProponente) ||
+      !["quiero", "no-quiero", "rechazo-implicito-por-retiro", "cancelada-por-retiro", null].includes(entrada.respuesta) ||
+      (entrada.respuesta === "no-quiero" && !("respondedor" in entrada && entrada.respondedor)) ||
+      (entrada.respuesta === "rechazo-implicito-por-retiro" &&
+        !("jugadorRetirado" in entrada && entrada.jugadorRetirado)) ||
+      (entrada.respuesta !== "no-quiero" && "respondedor" in entrada) ||
+      (entrada.respuesta !== "rechazo-implicito-por-retiro" && "jugadorRetirado" in entrada)
+    )
+      return false;
+    if (contexto && !contexto.jugadores.some((jugador) => jugador.id === entrada.proponente && jugador.equipo === entrada.equipoProponente))
+      return false;
+    if (
+      contexto &&
+      entrada.respuesta === "no-quiero" &&
+      !contexto.jugadores.some(
+        (jugador) => jugador.id === entrada.respondedor && jugador.equipo !== entrada.equipoProponente,
+      )
+    )
+      return false;
+    if (
+      contexto &&
+      entrada.respuesta === "rechazo-implicito-por-retiro" &&
+      !contexto.jugadores.some(
+        (jugador) => jugador.id === entrada.jugadorRetirado && jugador.equipo !== entrada.equipoProponente,
+      )
+    )
+      return false;
+    if (indice < historial.length - 1 && entrada.respuesta !== "quiero") return false;
+    if (entrada.respuesta === "quiero") ultimoAceptado = entrada;
   }
-  if (!apuestaValida(estado.apuestaActiva, contexto)) return false;
-  if (!estado.propuestaPendiente) return true;
-  const propuesta = estado.propuestaPendiente;
-  return (
-    propuesta.nivel === nivelSiguiente(estado.apuestaActiva.nivel) &&
-    !!propuesta.proponente &&
-    (!contexto ||
-      (esContextoTrucoValido(contexto) &&
-        !contexto.manoFinalizada &&
-        contexto.jugadores.some(
-          (jugador) =>
-            jugador.id === propuesta.proponente &&
-            jugador.equipo === estado.apuestaActiva!.equipoAceptante,
-        )))
-  );
+  const pendiente = historial.at(-1)?.respuesta === null ? historial.at(-1)! : null;
+  if (
+    (pendiente === null) !== (estado.propuestaPendiente === null) ||
+    (pendiente &&
+      (estado.propuestaPendiente!.nivel !== pendiente.nivel ||
+        estado.propuestaPendiente!.proponente !== pendiente.proponente ||
+        (contexto?.manoFinalizada ?? false)))
+  )
+    return false;
+  if (!ultimoAceptado) return estado.apuestaActiva === null;
+  if (!apuestaValida(estado.apuestaActiva!, contexto) || estado.apuestaActiva!.nivel !== ultimoAceptado.nivel)
+    return false;
+  if (contexto) {
+    const equipoAceptante = contexto.jugadores.find((jugador) => jugador.equipo !== ultimoAceptado.equipoProponente)?.equipo;
+    if (estado.apuestaActiva!.equipoAceptante !== equipoAceptante) return false;
+  }
+  return true;
 }
 
 const fallo = (codigo: string): ResultadoTruco => ({ aceptada: false, codigo });
+function registrarPropuesta(
+  estado: EstadoTrucoDominio,
+  nivel: NivelApuestaTruco,
+  proponente: string,
+  equipoProponente: string,
+): HistorialPropuestaTruco[] {
+  return [
+    ...estado.historialPropuestas,
+    {
+      orden: (estado.historialPropuestas.length + 1) as 1 | 2 | 3,
+      nivel,
+      proponente,
+      equipoProponente,
+      nivelAceptadoAnterior: estado.apuestaActiva?.nivel ?? null,
+      respuesta: null,
+    },
+  ];
+}
+function responderUltimaPropuesta(
+  estado: EstadoTrucoDominio,
+  respuesta: Exclude<RespuestaPropuestaTruco, null>,
+  jugadorRespuesta?: string,
+): HistorialPropuestaTruco[] {
+  return estado.historialPropuestas.map((entrada, indice) =>
+    indice === estado.historialPropuestas.length - 1
+      ? respuesta === "no-quiero"
+        ? { ...entrada, respuesta, respondedor: jugadorRespuesta! }
+        : respuesta === "rechazo-implicito-por-retiro"
+          ? { ...entrada, respuesta, jugadorRetirado: jugadorRespuesta! }
+        : { ...entrada, respuesta }
+      : entrada,
+  );
+}
+
+function secuenciaTrucoTerminada(estado: EstadoTrucoDominio): boolean {
+  const respuesta = estado.historialPropuestas.at(-1)?.respuesta;
+  return (
+    respuesta === "no-quiero" ||
+    respuesta === "rechazo-implicito-por-retiro" ||
+    respuesta === "cancelada-por-retiro"
+  );
+}
 
 function validarAccionBase(
   estado: EstadoTrucoDominio,
@@ -157,6 +254,7 @@ function validarAccionBase(
 ): ResultadoTruco | null {
   if (!esContextoTrucoValido(contexto)) return fallo("contexto-invalido");
   if (!esEstadoTrucoValido(estado, contexto)) return fallo("estado-invalido");
+  if (secuenciaTrucoTerminada(estado)) return fallo("secuencia-finalizada");
   if (estado.propuestaPendiente) return fallo("propuesta-pendiente");
   if (contexto.manoFinalizada) return fallo("mano-finalizada");
   if (contexto.florPendiente) return fallo("flor-pendiente");
@@ -179,7 +277,7 @@ export function proponerTruco(
   const propuesta: PropuestaTrucoPendiente = { nivel: "truco", proponente: jugador };
   return {
     aceptada: true,
-    estado: { ...estado, propuestaPendiente: propuesta },
+    estado: { ...estado, propuestaPendiente: propuesta, historialPropuestas: registrarPropuesta(estado, "truco", jugador, proponente.equipo) },
     eventos: [{ tipo: "truco-propuesto", propuesta, equipoProponente: proponente.equipo }],
   };
 }
@@ -192,6 +290,7 @@ function proponerAumento(
 ): ResultadoTruco {
   if (!esContextoTrucoValido(contexto)) return fallo("contexto-invalido");
   if (!esEstadoTrucoValido(estado, contexto)) return fallo("estado-invalido");
+  if (secuenciaTrucoTerminada(estado)) return fallo("secuencia-finalizada");
   if (contexto.manoFinalizada) return fallo("mano-finalizada");
   if (contexto.florPendiente) return fallo("flor-pendiente");
   if (contexto.envidoPendiente) return fallo("envido-pendiente");
@@ -211,7 +310,21 @@ function proponerAumento(
     const propuesta: PropuestaTrucoPendiente = { nivel, proponente: jugador };
     return {
       aceptada: true,
-      estado: { apuestaActiva, propuestaPendiente: propuesta },
+      estado: {
+        apuestaActiva,
+        propuestaPendiente: propuesta,
+        historialPropuestas: [
+          ...responderUltimaPropuesta(estado, "quiero"),
+          {
+            orden: (estado.historialPropuestas.length + 1) as 1 | 2 | 3,
+            nivel,
+            proponente: jugador,
+            equipoProponente: proponente.equipo,
+            nivelAceptadoAnterior: apuestaActiva.nivel,
+            respuesta: null,
+          },
+        ],
+      },
       eventos: [
         {
           tipo: tipoAceptacion(propuestaAnterior.nivel),
@@ -234,7 +347,7 @@ function proponerAumento(
   const propuesta: PropuestaTrucoPendiente = { nivel, proponente: jugador };
   return {
     aceptada: true,
-    estado: { ...estado, propuestaPendiente: propuesta },
+    estado: { ...estado, propuestaPendiente: propuesta, historialPropuestas: registrarPropuesta(estado, nivel, jugador, proponente.equipo) },
     eventos: [
       {
         tipo: nivel === "retruco" ? "retruco-propuesto" : "vale-cuatro-propuesto",
@@ -290,6 +403,7 @@ function responderPropuesta(
       estado: {
         apuestaActiva: { nivel, equipoAceptante: respondedor.equipo },
         propuestaPendiente: null,
+        historialPropuestas: responderUltimaPropuesta(estado, "quiero"),
       },
       eventos: [
         {
@@ -303,7 +417,11 @@ function responderPropuesta(
   const puntos: 1 | 2 | 3 = nivel === "truco" ? 1 : nivel === "retruco" ? 2 : 3;
   return {
     aceptada: true,
-    estado: crearEstadoTruco(),
+    estado: {
+      apuestaActiva: estado.apuestaActiva,
+      propuestaPendiente: null,
+      historialPropuestas: responderUltimaPropuesta(estado, "no-quiero", jugador),
+    },
     eventos: [
       {
         tipo: tipoRechazo(nivel),
@@ -411,7 +529,7 @@ export function liquidarTrucoPorRetiro(
     return { aceptada: true, estado, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-sin-propuesta-por-retiro" }] };
   const proponente = contexto.jugadores.find((jugador) => jugador.id === propuesta.proponente)!;
   if (retirado.equipo === proponente.equipo)
-    return { aceptada: true, estado: { ...estado, propuestaPendiente: null }, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-cancelado-por-retiro" }] };
+    return { aceptada: true, estado: { ...estado, propuestaPendiente: null, historialPropuestas: responderUltimaPropuesta(estado, "cancelada-por-retiro") }, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-cancelado-por-retiro" }] };
   const rechazo = propuesta.nivel === "truco" ? 1 : propuesta.nivel === "retruco" ? 2 : 3;
-  return { aceptada: true, estado: crearEstadoTruco(), liquidacion: { causa: "rechazo-implicito-por-retiro", equipo: proponente.equipo, puntos: rechazo }, eventos: [{ tipo: "truco-rechazo-implicito-por-retiro" }] };
+  return { aceptada: true, estado: { apuestaActiva: estado.apuestaActiva, propuestaPendiente: null, historialPropuestas: responderUltimaPropuesta(estado, "rechazo-implicito-por-retiro", jugadorRetirado) }, liquidacion: { causa: "rechazo-implicito-por-retiro", equipo: proponente.equipo, puntos: rechazo }, eventos: [{ tipo: "truco-rechazo-implicito-por-retiro" }] };
 }

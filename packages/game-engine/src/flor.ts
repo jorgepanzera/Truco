@@ -162,7 +162,7 @@ export function liquidarFlorPorRetiro(
           new Set(estado.anuncios.map((anuncio) => anuncio.equipo)).size === 2,
         adjudicaciones,
       },
-      eventos: [{ tipo: "flor-ordinaria-liquidada-por-retiro", jugador: jugadorRetirado }],
+      eventos: [{ tipo: "flor-adjudicada", adjudicaciones }],
     };
   }
   const esProponente = retirado.equipo === desafio.equipoProponente;
@@ -210,7 +210,11 @@ export type ResultadoFlor =
   | Readonly<{
       aceptada: true;
       estado: EstadoFlorDominio;
-      eventos: readonly Readonly<{ tipo: string; jugador?: string }>[];
+      eventos: readonly Readonly<{
+        tipo: string;
+        jugador?: string;
+        adjudicaciones?: EstadoFlorDominio["adjudicaciones"];
+      }>[];
     }>
   | Readonly<{ aceptada: false; codigo: string }>;
 const fallo = (codigo: string): ResultadoFlor => ({ aceptada: false, codigo });
