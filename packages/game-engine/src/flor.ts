@@ -158,6 +158,7 @@ export function liquidarFlorPorRetiro(
       estado: {
         ...estado,
         cerrado: true,
+        derechosPerdidos: [...new Set([...estado.derechosPerdidos, ...derechos(contexto, estado)])],
         oportunidadDesafioConsumida:
           new Set(estado.anuncios.map((anuncio) => anuncio.equipo)).size === 2,
         adjudicaciones,

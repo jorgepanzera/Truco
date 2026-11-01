@@ -34,6 +34,21 @@ export type AdjudicacionEnvido = Readonly<{
   respuesta: "quiero" | "no-quiero" | "rechazo-implicito-por-retiro";
   historial: readonly CantoRegistrado[];
 }>;
+/** Hecho canónico persistente de una cadena pendiente cerrada por retiro. */
+export type LiquidacionEnvidoPorRetiro = Readonly<{
+  causa: "rechazo-implicito-por-retiro" | "propuesta-cancelada-por-retiro";
+  /** Equipo beneficiado por el rechazo, o equipo retirado si la propuesta se canceló. */
+  equipo: string;
+  puntos: number;
+  jugadorRetirado: string;
+  historial: readonly CantoRegistrado[];
+}>;
+export type CancelacionEnvidoPorFlor = Readonly<{
+  causa: "cancelado-por-flor";
+  jugadorFlor: string;
+  equipoFlor: string;
+  historial: readonly CantoRegistrado[];
+}>;
 export type EventoEnvido =
   | Readonly<{ tipo: "envido-iniciado"; cadena: CadenaEnvidoPendiente }>
   | Readonly<{ tipo: "envido-aumentado"; cadena: CadenaEnvidoPendiente }>
@@ -41,6 +56,7 @@ export type EventoEnvido =
       tipo: "envido-aceptado" | "envido-rechazado" | "envido-rechazo-implicito-por-retiro";
       adjudicacion: AdjudicacionEnvido;
     }>
+  | Readonly<{ tipo: "envido-cancelado-por-flor"; cancelacion: CancelacionEnvidoPorFlor }>
   | Readonly<{ tipo: "envido-cancelado-por-retiro"; liquidacion: LiquidacionEnvidoPorRetiro }>;
 /** Datos de lectura canónicos que el coordinador deriva del estado de cartas. */
 export type ContextoEnvido = Readonly<{
@@ -290,10 +306,56 @@ export function esEstadoEnvidoValido(
   contexto: ContextoEnvido,
 ): boolean {
   if (!estado || !contexto || !Array.isArray(estado.resueltos)) return false;
+  if (!(
+    estado.liquidacionPorRetiro === null ||
+    esLiquidacionEnvidoPorRetiroValida(estado.liquidacionPorRetiro, contexto)
+  ))
+    return false;
+  if (!(
+    estado.cancelacionPorFlor === null ||
+    esCancelacionEnvidoPorFlorValida(estado.cancelacionPorFlor, contexto)
+  ))
+    return false;
   if (estado.pendiente && estado.resueltos.length > 0) return false;
-  if (!estado.iniciado && (estado.pendiente || estado.resueltos.length > 0)) return false;
+  if (
+    estado.pendiente &&
+    (estado.liquidacionPorRetiro !== null || estado.cancelacionPorFlor !== null)
+  )
+    return false;
+  if (estado.liquidacionPorRetiro !== null && estado.cancelacionPorFlor !== null) return false;
+  if (
+    !estado.iniciado &&
+    (estado.pendiente ||
+      estado.resueltos.length > 0 ||
+      estado.liquidacionPorRetiro !== null ||
+      estado.cancelacionPorFlor !== null)
+  )
+    return false;
   if (estado.resueltos.length > 1) return false;
   if (estado.resueltos.length === 1 && !adjudicacionValida(estado.resueltos[0], contexto))
+    return false;
+  const liquidacion = estado.liquidacionPorRetiro;
+  if (liquidacion?.causa === "propuesta-cancelada-por-retiro") {
+    if (estado.resueltos.length !== 0) return false;
+  } else if (liquidacion?.causa === "rechazo-implicito-por-retiro") {
+    const adjudicacion = estado.resueltos[0];
+    if (
+      !adjudicacion ||
+      adjudicacion.respuesta !== "rechazo-implicito-por-retiro" ||
+      adjudicacion.equipo !== liquidacion.equipo ||
+      adjudicacion.puntos !== liquidacion.puntos ||
+      JSON.stringify(adjudicacion.historial) !== JSON.stringify(liquidacion.historial)
+    )
+      return false;
+  } else if (estado.resueltos[0]?.respuesta === "rechazo-implicito-por-retiro") return false;
+  if (estado.cancelacionPorFlor !== null && estado.resueltos.length !== 0) return false;
+  if (
+    estado.iniciado &&
+    !estado.pendiente &&
+    estado.resueltos.length === 0 &&
+    estado.liquidacionPorRetiro === null &&
+    estado.cancelacionPorFlor === null
+  )
     return false;
   return !estado.pendiente || cadenaPendienteValida(estado.pendiente, contexto);
 }
@@ -302,6 +364,8 @@ export function esEstadoEnvidoValido(
 export type EstadoEnvidoDominio = Readonly<{
   pendiente: CadenaEnvidoPendiente | null;
   resueltos: readonly AdjudicacionEnvido[];
+  liquidacionPorRetiro: LiquidacionEnvidoPorRetiro | null;
+  cancelacionPorFlor: CancelacionEnvidoPorFlor | null;
   iniciado: boolean;
 }>;
 export type EstadoEnvido = EstadoEnvidoDominio;
@@ -310,7 +374,13 @@ export type ResultadoEnvido =
   | Readonly<{ aceptada: false; codigo: string }>;
 const fallo = (codigo: string): ResultadoEnvido => ({ aceptada: false, codigo });
 export function crearEstadoEnvido(): EstadoEnvidoDominio {
-  return { pendiente: null, resueltos: [], iniciado: false };
+  return {
+    pendiente: null,
+    resueltos: [],
+    liquidacionPorRetiro: null,
+    cancelacionPorFlor: null,
+    iniciado: false,
+  };
 }
 export function iniciarEnvido(
   estado: EstadoEnvidoDominio,
@@ -449,39 +519,144 @@ export function liquidarEnvidoPorRetiro(
   const retirado = contexto.mesa.jugadores.find((jugador) => jugador.id === jugadorRetirado);
   if (!retirado) return fallo("jugador-inexistente");
   const cadena = estado.pendiente;
-  if (retirado.equipo === cadena.equipoProponente)
+  if (retirado.equipo === cadena.equipoProponente) {
+    const liquidacion: LiquidacionEnvidoPorRetiro = {
+      causa: "propuesta-cancelada-por-retiro",
+      equipo: retirado.equipo,
+      puntos: 0,
+      jugadorRetirado,
+      historial: cadena.cantos,
+    };
     return {
       aceptada: true,
-      estado: { ...estado, pendiente: null },
-      eventos: [{ tipo: "envido-cancelado-por-retiro", liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos: 0 } }],
+      estado: { ...estado, pendiente: null, liquidacionPorRetiro: liquidacion },
+      eventos: [{ tipo: "envido-cancelado-por-retiro", liquidacion }],
     };
+  }
   if (retirado.equipo !== cadena.equipoRespondedor) return fallo("retiro-incompatible");
   const base = rechazarEnvido(cadena);
   const adjudicacion: AdjudicacionEnvido = { ...base, respuesta: "rechazo-implicito-por-retiro" };
+  const liquidacion: LiquidacionEnvidoPorRetiro = {
+    causa: "rechazo-implicito-por-retiro",
+    equipo: adjudicacion.equipo,
+    puntos: adjudicacion.puntos,
+    jugadorRetirado,
+    historial: cadena.cantos,
+  };
   return {
     aceptada: true,
-    estado: { ...estado, pendiente: null, resueltos: [...estado.resueltos, adjudicacion] },
+    estado: {
+      ...estado,
+      pendiente: null,
+      resueltos: [...estado.resueltos, adjudicacion],
+      liquidacionPorRetiro: liquidacion,
+    },
     eventos: [{ tipo: "envido-rechazo-implicito-por-retiro", adjudicacion }],
   };
 }
 
-/** Consecuencia reglamentaria explícita de un retiro; no representa un No quiero voluntario. */
-export type LiquidacionEnvidoPorRetiro = Readonly<{
-  causa: "rechazo-implicito-por-retiro" | "propuesta-cancelada-por-retiro";
-  equipo: string;
-  puntos: number;
-}>;
+/** Cancela una cadena pendiente por prioridad de Flor y conserva la causa histórica. */
+export function cancelarEnvidoPorFlor(
+  estado: EstadoEnvidoDominio,
+  contexto: ContextoEnvido,
+  respaldoFlor: Readonly<{ jugador: string; equipo: string }>,
+): ResultadoEnvido {
+  if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
+  if (!estado.pendiente) return { aceptada: true, estado, eventos: [] };
+  const jugadorFlor = contexto.mesa.jugadores.find((jugador) => jugador.id === respaldoFlor?.jugador);
+  if (!jugadorFlor || jugadorFlor.equipo !== respaldoFlor.equipo) return fallo("respaldo-flor-invalido");
+  const cancelacion: CancelacionEnvidoPorFlor = {
+    causa: "cancelado-por-flor",
+    jugadorFlor: respaldoFlor.jugador,
+    equipoFlor: respaldoFlor.equipo,
+    historial: estado.pendiente.cantos,
+  };
+  return {
+    aceptada: true,
+    estado: { ...estado, pendiente: null, cancelacionPorFlor: cancelacion },
+    eventos: [{ tipo: "envido-cancelado-por-flor", cancelacion }],
+  };
+}
+
 export function esLiquidacionEnvidoPorRetiroValida(
   liquidacion: LiquidacionEnvidoPorRetiro,
   contexto: ContextoEnvido,
 ): boolean {
-  return (
-    !!liquidacion &&
-    (liquidacion.causa === "rechazo-implicito-por-retiro" ||
-      liquidacion.causa === "propuesta-cancelada-por-retiro") &&
-    contexto.equipos.includes(liquidacion.equipo) &&
-    Number.isInteger(liquidacion.puntos) &&
-    liquidacion.puntos >= 0
+  if (
+    !liquidacion ||
+    !(
+      liquidacion.causa === "rechazo-implicito-por-retiro" ||
+      liquidacion.causa === "propuesta-cancelada-por-retiro"
+    ) ||
+    !contexto.equipos.includes(liquidacion.equipo) ||
+    !Number.isInteger(liquidacion.puntos) ||
+    liquidacion.puntos < 0 ||
+    !Array.isArray(liquidacion.historial)
+  )
+    return false;
+  const ultimo = liquidacion.historial.at(-1);
+  const retirado = contexto.mesa.jugadores.find(
+    (jugador) => jugador.id === liquidacion.jugadorRetirado,
+  );
+  if (!ultimo || !retirado) return false;
+  const valores = liquidacion.historial.map((canto) => canto.canto);
+  const valorAceptado = valores.includes("falta-envido")
+    ? 0
+    : valores.reduce((suma, canto) => suma + aporte(canto), 0);
+  const cadena: CadenaEnvidoPendiente = {
+    proponente: ultimo.jugador,
+    equipoProponente: ultimo.equipo,
+    equipoRespondedor: contexto.equipos.find((equipo) => equipo !== ultimo.equipo)!,
+    cantos: liquidacion.historial,
+    valorAceptado,
+    valorAnteriorAceptado:
+      ultimo.canto === "falta-envido"
+        ? valores.slice(0, -1).reduce((suma, canto) => suma + aporte(canto), 0)
+        : valorAceptado - aporte(ultimo.canto),
+  };
+  if (!cadenaPendienteValida(cadena, contexto)) return false;
+  return liquidacion.causa === "rechazo-implicito-por-retiro"
+    ? retirado.equipo === cadena.equipoRespondedor &&
+        liquidacion.equipo === cadena.equipoProponente &&
+        liquidacion.puntos === (cadena.valorAnteriorAceptado || 1)
+    : retirado.id === cadena.proponente &&
+        retirado.equipo === cadena.equipoProponente &&
+        liquidacion.equipo === retirado.equipo &&
+        liquidacion.puntos === 0;
+}
+
+export function esCancelacionEnvidoPorFlorValida(
+  cancelacion: CancelacionEnvidoPorFlor,
+  contexto: ContextoEnvido,
+): boolean {
+  if (
+    !cancelacion ||
+    cancelacion.causa !== "cancelado-por-flor" ||
+    !contexto.mesa.jugadores.some(
+      (jugador) => jugador.id === cancelacion.jugadorFlor && jugador.equipo === cancelacion.equipoFlor,
+    ) ||
+    !Array.isArray(cancelacion.historial)
+  )
+    return false;
+  const ultimo = cancelacion.historial.at(-1);
+  if (!ultimo) return false;
+  const valores = cancelacion.historial.map((canto) => canto.canto);
+  const valorAceptado = valores.includes("falta-envido")
+    ? 0
+    : valores.reduce((suma, canto) => suma + aporte(canto), 0);
+  return cadenaPendienteValida(
+    {
+      proponente: ultimo.jugador,
+      equipoProponente: ultimo.equipo,
+      equipoRespondedor: contexto.equipos.find((equipo) => equipo !== ultimo.equipo)!,
+      cantos: cancelacion.historial,
+      valorAceptado,
+      valorAnteriorAceptado:
+        ultimo.canto === "falta-envido"
+          ? valores.slice(0, -1).reduce((suma, canto) => suma + aporte(canto), 0)
+          : valorAceptado - aporte(ultimo.canto),
+    },
+    contexto,
   );
 }
 
@@ -512,7 +687,10 @@ function adjudicacionValida(adjudicacion: AdjudicacionEnvido, contexto: Contexto
   };
   if (!cadenaPendienteValida(cadena, contexto) || !contexto.equipos.includes(adjudicacion.equipo))
     return false;
-  if (adjudicacion.respuesta === "no-quiero" || adjudicacion.respuesta === "rechazo-implicito-por-retiro")
+  if (
+    adjudicacion.respuesta === "no-quiero" ||
+    adjudicacion.respuesta === "rechazo-implicito-por-retiro"
+  )
     return (
       adjudicacion.motivo === "rechazo" &&
       adjudicacion.equipo === ultimo.equipo &&

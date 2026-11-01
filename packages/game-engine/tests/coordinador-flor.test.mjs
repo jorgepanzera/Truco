@@ -450,8 +450,32 @@ test("Flor cancela Envido pendiente sin puntos y no permite reabrirlo", () => {
   assert.equal(flor.aceptada, true);
   assert.equal(flor.estado.envido.pendiente, null);
   assert.deepEqual(flor.estado.envido.resueltos, []);
+  assert.deepEqual(flor.estado.envido.cancelacionPorFlor, {
+    causa: "cancelado-por-flor",
+    jugadorFlor: "a",
+    equipoFlor: "A",
+    historial: pendiente.estado.pendiente.cantos,
+  });
   assert.equal(flor.eventos.at(-1).tipo, "envido-cancelado-por-flor");
   assert.equal(JSON.stringify(preparado), antes);
+  for (const estadoAdulterado of [
+    { ...flor.estado, flor: { ...flor.estado.flor, anuncios: [] } },
+    {
+      ...flor.estado,
+      envido: {
+        ...flor.estado.envido,
+        cancelacionPorFlor: { ...flor.estado.envido.cancelacionPorFlor, jugadorFlor: "b", equipoFlor: "B" },
+      },
+    },
+  ]) {
+    const antesAdulterado = JSON.stringify(estadoAdulterado);
+    assert.equal(
+      ejecutarAccionCoordinada(estadoAdulterado, { tipo: "anunciar-flor", jugador: "a" }).rechazo
+        .codigo,
+      "estado-invalido",
+    );
+    assert.equal(JSON.stringify(estadoAdulterado), antesAdulterado);
+  }
   assert.equal(
     ejecutarAccionCoordinada(flor.estado, {
       tipo: "iniciar-envido",

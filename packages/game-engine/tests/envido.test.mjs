@@ -70,14 +70,21 @@ test("coordinador bloquea cartas y conserva turno", () => {
 
 test("liquida Envido, Real y Falta por retiro con causa explícita e inmutabilidad", () => {
   for (const canto of ["envido", "real-envido", "falta-envido"]) {
-    const iniciado = ejecutarAccionCoordinada(base().estado, { tipo: "iniciar-envido", jugador: "a", canto });
+    const iniciado = ejecutarAccionCoordinada(base().estado, {
+      tipo: "iniciar-envido",
+      jugador: "a",
+      canto,
+    });
     const contexto = obtenerContextoEnvido(iniciado.estado.juego, iniciado.estado.contextoInicio);
     const antes = JSON.stringify(iniciado.estado.envido);
     const rechazo = liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "b");
     assert.equal(rechazo.aceptada, true);
     assert.equal(rechazo.eventos[0].tipo, "envido-rechazo-implicito-por-retiro");
     assert.equal(rechazo.estado.resueltos[0].respuesta, "rechazo-implicito-por-retiro");
-    assert.equal(rechazo.estado.resueltos[0].puntos, canto === "envido" ? 1 : canto === "real-envido" ? 1 : 1);
+    assert.equal(
+      rechazo.estado.resueltos[0].puntos,
+      canto === "envido" ? 1 : canto === "real-envido" ? 1 : 1,
+    );
     assert.equal(esEstadoEnvidoValido(rechazo.estado, contexto), true);
     assert.equal(JSON.stringify(iniciado.estado.envido), antes);
     const cancelado = liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "a");
@@ -89,14 +96,121 @@ test("liquida Envido, Real y Falta por retiro con causa explícita e inmutabilid
 });
 
 test("retiro conserva Envido resuelto y rechaza jugador incompatible", () => {
-  const iniciado = ejecutarAccionCoordinada(base().estado, { tipo: "iniciar-envido", jugador: "a", canto: "envido" });
-  const resuelto = ejecutarAccionCoordinada(iniciado.estado, { tipo: "quiero-envido", jugador: "b" });
+  const iniciado = ejecutarAccionCoordinada(base().estado, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const resuelto = ejecutarAccionCoordinada(iniciado.estado, {
+    tipo: "quiero-envido",
+    jugador: "b",
+  });
   const contexto = obtenerContextoEnvido(resuelto.estado.juego, resuelto.estado.contextoInicio);
   const conservado = liquidarEnvidoPorRetiro(resuelto.estado.envido, contexto, "a");
   assert.equal(conservado.aceptada, true);
   assert.equal(conservado.estado, resuelto.estado.envido);
   assert.deepEqual(conservado.eventos, []);
   assert.equal(liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "x").aceptada, false);
+});
+test("retiro persiste procedencia canónica en cadenas iniciales y aumentadas", () => {
+  const prepararCadena = (cantos) => {
+    let estado = base().estado;
+    for (const [indice, canto] of cantos.entries()) {
+      const jugador = indice % 2 === 0 ? "a" : "b";
+      const accion = indice === 0 ? "iniciar-envido" : "aumentar-envido";
+      const resultado = ejecutarAccionCoordinada(estado, { tipo: accion, jugador, canto });
+      assert.equal(resultado.aceptada, true);
+      estado = resultado.estado;
+    }
+    return estado;
+  };
+  const casos = [
+    { cantos: ["envido"], rechazo: 1 },
+    { cantos: ["real-envido"], rechazo: 1 },
+    { cantos: ["falta-envido"], rechazo: 1 },
+    { cantos: ["envido", "envido"], rechazo: 2 },
+    { cantos: ["envido", "real-envido"], rechazo: 2 },
+    { cantos: ["real-envido", "falta-envido"], rechazo: 3 },
+    { cantos: ["envido", "envido", "real-envido", "falta-envido"], rechazo: 7 },
+  ];
+  for (const { cantos, rechazo } of casos) {
+    const estado = prepararCadena(cantos);
+    const contexto = obtenerContextoEnvido(estado.juego, estado.contextoInicio);
+    const ultimoProponente = cantos.length % 2 === 1 ? "a" : "b";
+    const respondedor = ultimoProponente === "a" ? "b" : "a";
+    const antes = JSON.stringify(estado.envido);
+    const implicito = liquidarEnvidoPorRetiro(estado.envido, contexto, respondedor);
+    assert.equal(implicito.aceptada, true);
+    assert.equal(implicito.estado.liquidacionPorRetiro.causa, "rechazo-implicito-por-retiro");
+    assert.equal(implicito.estado.liquidacionPorRetiro.jugadorRetirado, respondedor);
+    assert.equal(implicito.estado.liquidacionPorRetiro.puntos, rechazo);
+    assert.deepEqual(
+      implicito.estado.liquidacionPorRetiro.historial,
+      estado.envido.pendiente.cantos,
+    );
+    assert.equal(esEstadoEnvidoValido(implicito.estado, contexto), true);
+    assert.equal(JSON.stringify(estado.envido), antes);
+    const cancelado = liquidarEnvidoPorRetiro(estado.envido, contexto, ultimoProponente);
+    assert.equal(cancelado.aceptada, true);
+    assert.equal(cancelado.estado.liquidacionPorRetiro.causa, "propuesta-cancelada-por-retiro");
+    assert.equal(cancelado.estado.liquidacionPorRetiro.jugadorRetirado, ultimoProponente);
+    assert.equal(cancelado.estado.liquidacionPorRetiro.puntos, 0);
+    assert.equal(esEstadoEnvidoValido(cancelado.estado, contexto), true);
+    const repetido = liquidarEnvidoPorRetiro(implicito.estado, contexto, respondedor);
+    assert.equal(repetido.aceptada, true);
+    assert.equal(repetido.estado, implicito.estado);
+    assert.deepEqual(repetido.eventos, []);
+  }
+});
+test("validador rechaza procedencias de retiro adulteradas y no confunde Flor", () => {
+  const iniciado = ejecutarAccionCoordinada(base().estado, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const contexto = obtenerContextoEnvido(iniciado.estado.juego, iniciado.estado.contextoInicio);
+  const retiro = liquidarEnvidoPorRetiro(iniciado.estado.envido, contexto, "b");
+  assert.equal(retiro.aceptada, true);
+  const original = JSON.stringify(retiro.estado);
+  for (const liquidacionPorRetiro of [
+    { ...retiro.estado.liquidacionPorRetiro, jugadorRetirado: "a" },
+    { ...retiro.estado.liquidacionPorRetiro, equipo: "B" },
+    { ...retiro.estado.liquidacionPorRetiro, puntos: 2 },
+    {
+      ...retiro.estado.liquidacionPorRetiro,
+      historial: [
+        { ...retiro.estado.liquidacionPorRetiro.historial[0], jugador: "b", equipo: "B" },
+      ],
+    },
+  ])
+    assert.equal(esEstadoEnvidoValido({ ...retiro.estado, liquidacionPorRetiro }, contexto), false);
+  assert.equal(
+    esEstadoEnvidoValido(
+      { ...retiro.estado, resueltos: [{ ...retiro.estado.resueltos[0], equipo: "B" }] },
+      contexto,
+    ),
+    false,
+  );
+  assert.equal(JSON.stringify(retiro.estado), original);
+  const flor = {
+    ...iniciado.estado.envido,
+    pendiente: null,
+    cancelacionPorFlor: {
+      causa: "cancelado-por-flor",
+      jugadorFlor: "a",
+      equipoFlor: "A",
+      historial: iniciado.estado.envido.pendiente.cantos,
+    },
+  };
+  assert.equal(esEstadoEnvidoValido(flor, contexto), true);
+  assert.equal(esEstadoEnvidoValido({ ...flor, cancelacionPorFlor: null }, contexto), false);
+  assert.equal(
+    esEstadoEnvidoValido(
+      { ...flor, liquidacionPorRetiro: retiro.estado.liquidacionPorRetiro },
+      contexto,
+    ),
+    false,
+  );
 });
 test("coordinador detecta estados adulterados", () => {
   const { estado } = base();

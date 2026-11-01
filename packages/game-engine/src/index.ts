@@ -7,6 +7,7 @@ export * from "./envido.js";
 export * from "./flor.js";
 export * from "./truco.js";
 export * from "./coordinador.js";
+export * from "./partida.js";
 
 // Infraestructura de compilación; no representa comportamiento de juego.
 export const engineDependencies = [sharedPackage] as const;

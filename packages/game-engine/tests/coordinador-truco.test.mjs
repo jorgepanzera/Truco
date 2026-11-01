@@ -1065,6 +1065,52 @@ test("bazas adjudican Truco una sola vez con el ganador canonico y el nivel acep
   });
 });
 
+test("recorrido público completa una mano 1v1 de Envido y Truco por bazas", () => {
+  const { estado: inicial, mano } = baseGanadorA();
+  const antes = JSON.parse(JSON.stringify(inicial));
+  const envido = ejecutarAccionCoordinada(inicial, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const envidoAceptado = ejecutarAccionCoordinada(envido.estado, {
+    tipo: "quiero-envido",
+    jugador: "b",
+  });
+  const truco = ejecutarAccionCoordinada(envidoAceptado.estado, { tipo: "proponer-truco", jugador: "a" });
+  const trucoAceptado = ejecutarAccionCoordinada(truco.estado, { tipo: "quiero-truco", jugador: "b" });
+  const cartasA = mano.manos.find((item) => item.jugador === "a").cartas;
+  const cartasB = mano.manos.find((item) => item.jugador === "b").cartas;
+  const primeraA = ejecutarAccionCoordinada(trucoAceptado.estado, {
+    tipo: "jugar-carta", jugador: "a", carta: cartasA[0],
+  });
+  const primeraB = ejecutarAccionCoordinada(primeraA.estado, {
+    tipo: "jugar-carta", jugador: "b", carta: cartasB[0],
+  });
+  const segundaA = ejecutarAccionCoordinada(primeraB.estado, {
+    tipo: "jugar-carta", jugador: "a", carta: cartasA[1],
+  });
+  const final = ejecutarAccionCoordinada(segundaA.estado, {
+    tipo: "jugar-carta", jugador: "b", carta: cartasB[1],
+  });
+
+  assert.equal(final.aceptada, true);
+  assert.equal(final.estado.juego.finalizada, true);
+  assert.equal(final.estado.juego.equipoGanador, "A");
+  assert.deepEqual(
+    final.estado.envido.resueltos.map(({ equipo, puntos, motivo, respuesta }) => ({ equipo, puntos, motivo, respuesta })),
+    [{ equipo: "B", puntos: 2, motivo: "aceptacion", respuesta: "quiero" }],
+  );
+  assert.deepEqual(final.estado.adjudicacionTruco, {
+    causa: "mano-por-bazas", equipo: "A", puntos: 2, nivelAceptado: "truco",
+  });
+  assert.equal(
+    ejecutarAccionCoordinada(final.estado, { tipo: "jugar-carta", jugador: "a", carta: cartasA[2] }).rechazo.codigo,
+    "mano-finalizada",
+  );
+  assert.deepEqual(inicial, antes);
+});
+
 test("adjudicacion por bazas solo aparece al finalizar, no ante cartas invalidas y mantiene orden", () => {
   const { estado, mano } = baseGanadorA();
   const invalida = ejecutarAccionCoordinada(estado, {
@@ -1232,6 +1278,12 @@ test("Con Flor Quiero cancela Envido, preserva prioridad y permite desafios post
   );
   assert.equal(compuesto.estado.envido.pendiente, null);
   assert.deepEqual(compuesto.estado.envido.resueltos, []);
+  assert.deepEqual(compuesto.estado.envido.cancelacionPorFlor, {
+    causa: "cancelado-por-flor",
+    jugadorFlor: "b",
+    equipoFlor: "B",
+    historial: envido.estado.envido.pendiente.cantos,
+  });
   assert.equal(compuesto.estado.truco.apuestaActiva.nivel, "truco");
 
   const dosFlores = estadoConManos(
@@ -1439,12 +1491,10 @@ test("irse al mazo bloquea desafíos, rechaza 2v2 y no muta rechazos", () => {
     jugador: "a",
     canto: "envido",
   });
-  const antesEnvido = JSON.stringify(envido.estado);
-  assert.equal(
-    ejecutarAccionCoordinada(envido.estado, { tipo: "irse-al-mazo", jugador: "a" }).rechazo.codigo,
-    "envido-pendiente",
-  );
-  assert.equal(JSON.stringify(envido.estado), antesEnvido);
+  const mazoEnvido = ejecutarAccionCoordinada(envido.estado, { tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(mazoEnvido.aceptada, true);
+  assert.equal(mazoEnvido.estado.envido.liquidacionPorRetiro.causa, "propuesta-cancelada-por-retiro");
+  assert.equal(mazoEnvido.estado.liquidacionMazo.puntos, "pendiente");
   const truco = ejecutarAccionCoordinada(base().estado, { tipo: "proponer-truco", jugador: "a" });
   assert.equal(
     ejecutarAccionCoordinada(truco.estado, { tipo: "irse-al-mazo", jugador: "a" }).aceptada,
@@ -1484,11 +1534,10 @@ test("irse al mazo bloquea desafíos, rechaza 2v2 y no muta rechazos", () => {
     tipo: "proponer-contra-flor",
     jugador: "a",
   });
-  assert.equal(
-    ejecutarAccionCoordinada(contraFlor.estado, { tipo: "irse-al-mazo", jugador: "b" }).rechazo
-      .codigo,
-    "flor-pendiente",
-  );
+  const mazoContraFlor = ejecutarAccionCoordinada(contraFlor.estado, { tipo: "irse-al-mazo", jugador: "b" });
+  assert.equal(mazoContraFlor.aceptada, true);
+  assert.equal(mazoContraFlor.estado.flor.pendiente, null);
+  assert.equal(mazoContraFlor.estado.flor.historialDesafios.at(-1).respuesta, "rechazo-implicito-por-retiro");
   const mesa2v2 = {
     modalidad: "2v2",
     jugadores: [
@@ -1529,6 +1578,119 @@ test("irse al mazo no confunde una fase de Flor abierta sin desafío pendiente",
   assert.deepEqual(resultado.eventos, [{ tipo: "mano-decidida-por-mazo", equipo: "B" }]);
   assert.equal(resultado.estado.liquidacionMazo.puntos, "pendiente");
   assert.equal(resultado.estado.adjudicacionTruco, null);
+});
+
+test("mazo resuelve el desafío de Flor antes del cierre diferido y valida su procedencia", () => {
+  const conFlores = estadoConManos(
+    [
+      [c("oro", 1), c("oro", 3), c("oro", 6)],
+      [c("copa", 1), c("copa", 3), c("copa", 6)],
+    ],
+    c("espada", 7),
+  ).estado;
+  const florA = ejecutarAccionCoordinada(conFlores, { tipo: "anunciar-flor", jugador: "a" });
+  const florB = ejecutarAccionCoordinada(florA.estado, { tipo: "anunciar-flor", jugador: "b" });
+  const desafio = ejecutarAccionCoordinada(florB.estado, {
+    tipo: "proponer-contra-flor",
+    jugador: "a",
+  });
+
+  const rechazo = ejecutarAccionCoordinada(desafio.estado, { tipo: "irse-al-mazo", jugador: "b" });
+  assert.equal(rechazo.aceptada, true);
+  assert.equal(rechazo.estado.flor.historialDesafios.at(-1).respuesta, "rechazo-implicito-por-retiro");
+  assert.equal(rechazo.estado.flor.adjudicaciones.length, 2);
+  const cierreRechazo = ejecutarAccionCoordinada(rechazo.estado, { tipo: "liquidar-puntos-mazo" });
+  assert.equal(cierreRechazo.aceptada, true);
+  assert.equal(cierreRechazo.estado.flor.adjudicaciones.length, 2);
+
+  const adulterado = {
+    ...rechazo.estado,
+    flor: {
+      ...rechazo.estado.flor,
+      historialDesafios: rechazo.estado.flor.historialDesafios.map((historial, indice) =>
+        indice === rechazo.estado.flor.historialDesafios.length - 1
+          ? { ...historial, proponente: "b" }
+          : historial,
+      ),
+    },
+  };
+  const invalido = ejecutarAccionCoordinada(adulterado, { tipo: "liquidar-puntos-mazo" });
+  assert.equal(invalido.aceptada, false);
+  assert.equal(invalido.rechazo.codigo, "estado-invalido");
+  assert.equal(adulterado.flor.historialDesafios.at(-1).proponente, "b");
+
+  const cancelacion = ejecutarAccionCoordinada(desafio.estado, { tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(cancelacion.aceptada, true);
+  assert.equal(cancelacion.estado.flor.historialDesafios.at(-1).respuesta, "cancelado-por-retiro");
+  assert.equal(ejecutarAccionCoordinada(cancelacion.estado, { tipo: "liquidar-puntos-mazo" }).aceptada, true);
+});
+
+test("mazo liquida Envido pendiente canónicamente y conserva la mano diferida", () => {
+  const preparar = (cantos) => {
+    let estado = baseSinFlor().estado;
+    for (const [indice, canto] of cantos.entries()) {
+      const resultado = ejecutarAccionCoordinada(estado, {
+        tipo: indice === 0 ? "iniciar-envido" : "aumentar-envido",
+        jugador: indice % 2 === 0 ? "a" : "b",
+        canto,
+      });
+      assert.equal(resultado.aceptada, true);
+      estado = resultado.estado;
+    }
+    return estado;
+  };
+  for (const { cantos, rechazo } of [
+    { cantos: ["envido"], rechazo: 1 },
+    { cantos: ["real-envido"], rechazo: 1 },
+    { cantos: ["falta-envido"], rechazo: 1 },
+    { cantos: ["envido", "envido"], rechazo: 2 },
+    { cantos: ["envido", "real-envido"], rechazo: 2 },
+    { cantos: ["real-envido", "falta-envido"], rechazo: 3 },
+    { cantos: ["envido", "envido", "real-envido", "falta-envido"], rechazo: 7 },
+  ]) {
+    const estado = preparar(cantos);
+    const proponente = cantos.length % 2 ? "a" : "b";
+    const respondedor = proponente === "a" ? "b" : "a";
+    const rechazoImplicito = ejecutarAccionCoordinada(estado, { tipo: "irse-al-mazo", jugador: respondedor });
+    assert.equal(rechazoImplicito.aceptada, true);
+    assert.equal(rechazoImplicito.estado.envido.resueltos[0].puntos, rechazo);
+    assert.equal(rechazoImplicito.estado.envido.liquidacionPorRetiro.jugadorRetirado, respondedor);
+    assert.equal(rechazoImplicito.estado.juego.equipoGanador, proponente === "a" ? "A" : "B");
+    assert.deepEqual(rechazoImplicito.eventos.map((evento) => evento.tipo), [
+      "envido-rechazo-implicito-por-retiro",
+      "mano-decidida-por-mazo",
+    ]);
+    const mano = ejecutarAccionCoordinada(rechazoImplicito.estado, { tipo: "liquidar-puntos-mazo" });
+    assert.equal(mano.aceptada, true);
+    assert.equal(mano.estado.adjudicacionTruco.puntos, 1);
+
+    const cancelacion = ejecutarAccionCoordinada(estado, { tipo: "irse-al-mazo", jugador: proponente });
+    assert.equal(cancelacion.aceptada, true);
+    assert.equal(cancelacion.estado.envido.resueltos.length, 0);
+    assert.equal(cancelacion.estado.envido.liquidacionPorRetiro.causa, "propuesta-cancelada-por-retiro");
+    assert.equal(cancelacion.estado.juego.equipoGanador, respondedor === "a" ? "A" : "B");
+  }
+});
+
+test("mazo con Envido rechaza procedencias históricas adulteradas sin mutar", () => {
+  const iniciado = ejecutarAccionCoordinada(baseSinFlor().estado, {
+    tipo: "iniciar-envido", jugador: "a", canto: "envido",
+  });
+  const mazo = ejecutarAccionCoordinada(iniciado.estado, { tipo: "irse-al-mazo", jugador: "b" });
+  assert.equal(mazo.aceptada, true);
+  const accion = { tipo: "liquidar-puntos-mazo" };
+  for (const estado of [
+    { ...mazo.estado, juego: { ...mazo.estado.juego, retirados: ["a"] } },
+    {
+      ...mazo.estado,
+      envido: { ...mazo.estado.envido, liquidacionPorRetiro: { ...mazo.estado.envido.liquidacionPorRetiro, jugadorRetirado: "a" } },
+    },
+    { ...mazo.estado, liquidacionMazo: null },
+  ]) {
+    const antes = JSON.stringify(estado);
+    assert.equal(ejecutarAccionCoordinada(estado, accion).rechazo.codigo, "estado-invalido");
+    assert.equal(JSON.stringify(estado), antes);
+  }
 });
 
 test("irse al mazo conserva la adjudicación resuelta de Envido sin reemitirla", () => {
