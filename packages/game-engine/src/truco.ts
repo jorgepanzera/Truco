@@ -8,6 +8,8 @@ export type ContextoTruco = Readonly<{
   manoFinalizada: boolean;
   florPendiente: boolean;
   envidoPendiente: boolean;
+  /** Participantes que aún pueden intervenir; omitido equivale a todos. */
+  jugadoresActivos?: readonly string[];
 }>;
 
 /** El equipo aceptante es necesario para legitimar el siguiente aumento. */
@@ -20,11 +22,7 @@ export type PropuestaTrucoPendiente = Readonly<{
   proponente: string;
 }>;
 export type RespuestaPropuestaTruco =
-  | "quiero"
-  | "no-quiero"
-  | "rechazo-implicito-por-retiro"
-  | "cancelada-por-retiro"
-  | null;
+  "quiero" | "no-quiero" | "rechazo-implicito-por-retiro" | "cancelada-por-retiro" | null;
 type BaseHistorialPropuestaTruco = Readonly<{
   orden: 1 | 2 | 3;
   nivel: NivelApuestaTruco;
@@ -95,9 +93,17 @@ function esContextoTrucoValido(contexto: ContextoTruco | null | undefined): bool
   )
     return false;
   return (
-    contexto.jugadorTurno === null ||
-    jugadores.some((jugador) => jugador.id === contexto.jugadorTurno)
+    (contexto.jugadorTurno === null ||
+      jugadores.some((jugador) => jugador.id === contexto.jugadorTurno)) &&
+    (contexto.jugadoresActivos === undefined ||
+      (Array.isArray(contexto.jugadoresActivos) &&
+        new Set(contexto.jugadoresActivos).size === contexto.jugadoresActivos.length &&
+        contexto.jugadoresActivos.every((id) => jugadores.some((jugador) => jugador.id === id))))
   );
+}
+
+function estaActivo(contexto: ContextoTruco, jugador: string): boolean {
+  return contexto.jugadoresActivos?.includes(jugador) ?? true;
 }
 
 function nivelSiguiente(nivel: NivelApuestaTruco | null): NivelApuestaTruco | null {
@@ -156,7 +162,13 @@ export function esEstadoTrucoValido(
       !entrada.equipoProponente ||
       entrada.nivelAceptadoAnterior !== (ultimoAceptado?.nivel ?? null) ||
       (indice > 0 && entrada.equipoProponente === historial[indice - 1]!.equipoProponente) ||
-      !["quiero", "no-quiero", "rechazo-implicito-por-retiro", "cancelada-por-retiro", null].includes(entrada.respuesta) ||
+      ![
+        "quiero",
+        "no-quiero",
+        "rechazo-implicito-por-retiro",
+        "cancelada-por-retiro",
+        null,
+      ].includes(entrada.respuesta) ||
       (entrada.respuesta === "no-quiero" && !("respondedor" in entrada && entrada.respondedor)) ||
       (entrada.respuesta === "rechazo-implicito-por-retiro" &&
         !("jugadorRetirado" in entrada && entrada.jugadorRetirado)) ||
@@ -164,13 +176,20 @@ export function esEstadoTrucoValido(
       (entrada.respuesta !== "rechazo-implicito-por-retiro" && "jugadorRetirado" in entrada)
     )
       return false;
-    if (contexto && !contexto.jugadores.some((jugador) => jugador.id === entrada.proponente && jugador.equipo === entrada.equipoProponente))
+    if (
+      contexto &&
+      !contexto.jugadores.some(
+        (jugador) =>
+          jugador.id === entrada.proponente && jugador.equipo === entrada.equipoProponente,
+      )
+    )
       return false;
     if (
       contexto &&
       entrada.respuesta === "no-quiero" &&
       !contexto.jugadores.some(
-        (jugador) => jugador.id === entrada.respondedor && jugador.equipo !== entrada.equipoProponente,
+        (jugador) =>
+          jugador.id === entrada.respondedor && jugador.equipo !== entrada.equipoProponente,
       )
     )
       return false;
@@ -178,7 +197,8 @@ export function esEstadoTrucoValido(
       contexto &&
       entrada.respuesta === "rechazo-implicito-por-retiro" &&
       !contexto.jugadores.some(
-        (jugador) => jugador.id === entrada.jugadorRetirado && jugador.equipo !== entrada.equipoProponente,
+        (jugador) =>
+          jugador.id === entrada.jugadorRetirado && jugador.equipo !== entrada.equipoProponente,
       )
     )
       return false;
@@ -195,10 +215,15 @@ export function esEstadoTrucoValido(
   )
     return false;
   if (!ultimoAceptado) return estado.apuestaActiva === null;
-  if (!apuestaValida(estado.apuestaActiva!, contexto) || estado.apuestaActiva!.nivel !== ultimoAceptado.nivel)
+  if (
+    !apuestaValida(estado.apuestaActiva!, contexto) ||
+    estado.apuestaActiva!.nivel !== ultimoAceptado.nivel
+  )
     return false;
   if (contexto) {
-    const equipoAceptante = contexto.jugadores.find((jugador) => jugador.equipo !== ultimoAceptado.equipoProponente)?.equipo;
+    const equipoAceptante = contexto.jugadores.find(
+      (jugador) => jugador.equipo !== ultimoAceptado.equipoProponente,
+    )?.equipo;
     if (estado.apuestaActiva!.equipoAceptante !== equipoAceptante) return false;
   }
   return true;
@@ -234,7 +259,7 @@ function responderUltimaPropuesta(
         ? { ...entrada, respuesta, respondedor: jugadorRespuesta! }
         : respuesta === "rechazo-implicito-por-retiro"
           ? { ...entrada, respuesta, jugadorRetirado: jugadorRespuesta! }
-        : { ...entrada, respuesta }
+          : { ...entrada, respuesta }
       : entrada,
   );
 }
@@ -273,11 +298,16 @@ export function proponerTruco(
   if (estado.apuestaActiva) return fallo("apuesta-ya-aceptada");
   const proponente = contexto.jugadores.find((participante) => participante.id === jugador);
   if (!proponente) return fallo("jugador-inexistente");
+  if (!estaActivo(contexto, jugador)) return fallo("jugador-inactivo");
   if (contexto.jugadorTurno !== jugador) return fallo("fuera-de-turno");
   const propuesta: PropuestaTrucoPendiente = { nivel: "truco", proponente: jugador };
   return {
     aceptada: true,
-    estado: { ...estado, propuestaPendiente: propuesta, historialPropuestas: registrarPropuesta(estado, "truco", jugador, proponente.equipo) },
+    estado: {
+      ...estado,
+      propuestaPendiente: propuesta,
+      historialPropuestas: registrarPropuesta(estado, "truco", jugador, proponente.equipo),
+    },
     eventos: [{ tipo: "truco-propuesto", propuesta, equipoProponente: proponente.equipo }],
   };
 }
@@ -296,6 +326,7 @@ function proponerAumento(
   if (contexto.envidoPendiente) return fallo("envido-pendiente");
   const proponente = contexto.jugadores.find((participante) => participante.id === jugador);
   if (!proponente) return fallo("jugador-inexistente");
+  if (!estaActivo(contexto, jugador)) return fallo("jugador-inactivo");
   if (estado.propuestaPendiente) {
     const propuestaAnterior = estado.propuestaPendiente;
     if (nivelSiguiente(propuestaAnterior.nivel) !== nivel) return fallo("aumento-no-disponible");
@@ -347,7 +378,11 @@ function proponerAumento(
   const propuesta: PropuestaTrucoPendiente = { nivel, proponente: jugador };
   return {
     aceptada: true,
-    estado: { ...estado, propuestaPendiente: propuesta, historialPropuestas: registrarPropuesta(estado, nivel, jugador, proponente.equipo) },
+    estado: {
+      ...estado,
+      propuestaPendiente: propuesta,
+      historialPropuestas: registrarPropuesta(estado, nivel, jugador, proponente.equipo),
+    },
     eventos: [
       {
         tipo: nivel === "retruco" ? "retruco-propuesto" : "vale-cuatro-propuesto",
@@ -393,6 +428,7 @@ function responderPropuesta(
     (participante) => participante.id === estado.propuestaPendiente!.proponente,
   )!;
   if (!respondedor) return fallo("jugador-inexistente");
+  if (!estaActivo(contexto, jugador)) return fallo("jugador-inactivo");
   if (respondedor.equipo === proponente.equipo) return fallo("respondedor-invalido");
   if (contexto.florPendiente) return fallo("flor-pendiente");
   if (contexto.envidoPendiente) return fallo("envido-pendiente");
@@ -510,7 +546,12 @@ export type ResultadoLiquidacionTrucoPorRetiro =
       aceptada: true;
       estado: EstadoTrucoDominio;
       liquidacion: LiquidacionTrucoPorRetiro;
-      eventos: readonly Readonly<{ tipo: "truco-rechazo-implicito-por-retiro" | "truco-cancelado-por-retiro" | "truco-sin-propuesta-por-retiro" }>[];
+      eventos: readonly Readonly<{
+        tipo:
+          | "truco-rechazo-implicito-por-retiro"
+          | "truco-cancelado-por-retiro"
+          | "truco-sin-propuesta-por-retiro";
+      }>[];
     }>
   | Readonly<{ aceptada: false; codigo: string }>;
 /** Liquida una propuesta por retiro sin reutilizar la respuesta No quiero. */
@@ -524,12 +565,50 @@ export function liquidarTrucoPorRetiro(
   if (!retirado) return { aceptada: false, codigo: "jugador-inexistente" };
   const propuesta = estado.propuestaPendiente;
   const nivelAceptado = estado.apuestaActiva?.nivel ?? null;
-  const puntos = nivelAceptado === "truco" ? 2 : nivelAceptado === "retruco" ? 3 : nivelAceptado === "vale-cuatro" ? 4 : 1;
+  const puntos =
+    nivelAceptado === "truco"
+      ? 2
+      : nivelAceptado === "retruco"
+        ? 3
+        : nivelAceptado === "vale-cuatro"
+          ? 4
+          : 1;
   if (!propuesta)
-    return { aceptada: true, estado, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-sin-propuesta-por-retiro" }] };
+    return {
+      aceptada: true,
+      estado,
+      liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos },
+      eventos: [{ tipo: "truco-sin-propuesta-por-retiro" }],
+    };
   const proponente = contexto.jugadores.find((jugador) => jugador.id === propuesta.proponente)!;
   if (retirado.equipo === proponente.equipo)
-    return { aceptada: true, estado: { ...estado, propuestaPendiente: null, historialPropuestas: responderUltimaPropuesta(estado, "cancelada-por-retiro") }, liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos }, eventos: [{ tipo: "truco-cancelado-por-retiro" }] };
+    return {
+      aceptada: true,
+      estado: {
+        ...estado,
+        propuestaPendiente: null,
+        historialPropuestas: responderUltimaPropuesta(estado, "cancelada-por-retiro"),
+      },
+      liquidacion: { causa: "propuesta-cancelada-por-retiro", equipo: retirado.equipo, puntos },
+      eventos: [{ tipo: "truco-cancelado-por-retiro" }],
+    };
   const rechazo = propuesta.nivel === "truco" ? 1 : propuesta.nivel === "retruco" ? 2 : 3;
-  return { aceptada: true, estado: { apuestaActiva: estado.apuestaActiva, propuestaPendiente: null, historialPropuestas: responderUltimaPropuesta(estado, "rechazo-implicito-por-retiro", jugadorRetirado) }, liquidacion: { causa: "rechazo-implicito-por-retiro", equipo: proponente.equipo, puntos: rechazo }, eventos: [{ tipo: "truco-rechazo-implicito-por-retiro" }] };
+  return {
+    aceptada: true,
+    estado: {
+      apuestaActiva: estado.apuestaActiva,
+      propuestaPendiente: null,
+      historialPropuestas: responderUltimaPropuesta(
+        estado,
+        "rechazo-implicito-por-retiro",
+        jugadorRetirado,
+      ),
+    },
+    liquidacion: {
+      causa: "rechazo-implicito-por-retiro",
+      equipo: proponente.equipo,
+      puntos: rechazo,
+    },
+    eventos: [{ tipo: "truco-rechazo-implicito-por-retiro" }],
+  };
 }

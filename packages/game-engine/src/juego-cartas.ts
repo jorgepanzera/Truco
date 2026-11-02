@@ -17,6 +17,8 @@ export type ResultadoBaza = Readonly<{
   equipoGanador: string | null;
   jerarquiaMaxima: number;
   jugadoresMaximos: readonly string[];
+  /** Autor de la carta ganadora, antes de filtrar futuros jugadores retirados. */
+  autorHistorico: string | null;
   salidaSiguiente: string;
 }>;
 export type BazaCompletada = Readonly<{
@@ -43,6 +45,7 @@ export type ResultadoProgresivo = Readonly<{
 }>;
 export type EventoJuegoCartas =
   | Readonly<{ tipo: "carta-jugada"; jugada: JugadaCarta }>
+  | Readonly<{ tipo: "jugador-retirado"; jugador: string }>
   | Readonly<{ tipo: "baza-resuelta"; baza: BazaCompletada }>
   | Readonly<{ tipo: "mano-decidida-por-bazas"; equipo: string }>
   | Readonly<{ tipo: "mano-decidida-por-rechazo-truco"; equipo: string }>
@@ -52,6 +55,7 @@ export type RechazoJuegoCartas = Readonly<{
     | "estado-invalido"
     | "mano-finalizada"
     | "jugador-inexistente"
+    | "jugador-retirado"
     | "fuera-de-turno"
     | "carta-invalida"
     | "carta-no-disponible";
@@ -184,18 +188,33 @@ function ordenDesdeMano(mesa: Mesa, manoOriginal: string): string[] {
   return obtenerOrdenReparto(mesa, jugadorAnterior(mesa, manoOriginal));
 }
 
+/** Orden de una baza conservando las cartas ya históricas de retirados. */
+function ordenBaza(
+  mesa: Mesa,
+  salida: string,
+  retirados: readonly string[],
+  jugadas: readonly JugadaCarta[],
+): string[] {
+  const historicos = new Set(jugadas.map((jugada) => jugada.jugador));
+  return ordenDesdeMano(mesa, salida).filter(
+    (jugador) => !retirados.includes(jugador) || historicos.has(jugador),
+  );
+}
+
 /** Resuelve una baza completa; la política de participantes pertenece al estado de la mano. */
 export function resolverBaza(
   mesa: Mesa,
   muestra: Carta,
   manoOriginal: string,
   baza: BazaEnCurso,
+  retirados: readonly string[] = [],
 ): ResultadoBaza {
   validarMesa(mesa);
   if (!esCarta(muestra) || !Array.isArray(baza?.jugadas) || typeof baza.salida !== "string")
     throw new TypeError("Baza inválida.");
   const jugadores = mesa.jugadores;
-  if (baza.jugadas.length !== jugadores.length) throw new TypeError("La baza no está completa.");
+  const orden = ordenBaza(mesa, baza.salida, retirados, baza.jugadas);
+  if (baza.jugadas.length !== orden.length) throw new TypeError("La baza no está completa.");
   const ids = new Set<string>();
   for (const jugada of baza.jugadas) {
     if (
@@ -208,7 +227,11 @@ export function resolverBaza(
       throw new TypeError("Jugadas duplicadas o muestra inválida.");
     ids.add(jugada.jugador);
   }
-  if (ids.size !== jugadores.length || !ids.has(baza.salida))
+  if (
+    ids.size !== orden.length ||
+    !ids.has(baza.salida) ||
+    baza.jugadas.some((jugada, indice) => jugada.jugador !== orden[indice])
+  )
     throw new TypeError("Participantes inválidos.");
   const jerarquias = baza.jugadas.map((jugada) => obtenerJerarquia(jugada.carta, muestra));
   const mejorPorEquipo = new Map<string, number>();
@@ -231,11 +254,31 @@ export function resolverBaza(
         jugadores.find((j) => j.id === jugada.jugador)!.equipo === equipoGanador,
     )
     .map((jugada) => jugada.jugador);
-  const salidaSiguiente =
+  const autorHistorico =
     equipoGanador === null
-      ? manoOriginal
+      ? null
       : ordenDesdeMano(mesa, manoOriginal).find((jugador) => jugadoresMaximos.includes(jugador))!;
-  return { equipoGanador, jerarquiaMaxima, jugadoresMaximos, salidaSiguiente };
+  const referenciaSalida = autorHistorico ?? manoOriginal;
+  const salidaSiguiente = retirados.includes(referenciaSalida)
+    ? siguienteActivoEnMesa(mesa, retirados, referenciaSalida)
+    : referenciaSalida;
+  if (salidaSiguiente === null) throw new TypeError("No queda jugador activo.");
+  return { equipoGanador, jerarquiaMaxima, jugadoresMaximos, autorHistorico, salidaSiguiente };
+}
+
+function siguienteActivoEnMesa(
+  mesa: Mesa,
+  retirados: readonly string[],
+  desde: string,
+): string | null {
+  const orden = [...mesa.jugadores].sort((a, b) => a.posicion - b.posicion);
+  const indice = orden.findIndex((jugador) => jugador.id === desde);
+  if (indice < 0) throw new TypeError("El jugador no pertenece a la mesa.");
+  for (let paso = 1; paso <= orden.length; paso++) {
+    const candidato = orden[(indice + paso) % orden.length].id;
+    if (!retirados.includes(candidato)) return candidato;
+  }
+  return null;
 }
 
 /** Implementa exactamente las combinaciones completas y prefijos permitidos del Reglamento §5.2. */
@@ -312,6 +355,7 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
         estado.mano.muestra,
         estado.mano.manoOriginal,
         baza,
+        estado.retirados,
       );
       if (JSON.stringify(resultado) !== JSON.stringify(baza.resultado)) return false;
       resultados.push(resultado.equipoGanador);
@@ -386,12 +430,9 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
       }
       return estado.jugadorTurno === null && estado.bazaActual.jugadas.length === 0;
     }
-    if (estado.bazaActual.salida !== salida || estado.bazaActual.jugadas.length >= jugadores.length)
+    const orden = ordenBaza(estado.mano.mesa, salida, estado.retirados, estado.bazaActual.jugadas);
+    if (estado.bazaActual.salida !== salida || estado.bazaActual.jugadas.length >= orden.length)
       return false;
-    const orden = [
-      salida,
-      ...obtenerOrdenReparto(estado.mano.mesa, salida).slice(0, jugadores.length - 1),
-    ];
     if (estado.bazaActual.jugadas.some((jugada, indice) => jugada.jugador !== orden[indice]))
       return false;
     jugadasHistoricas.push(...estado.bazaActual.jugadas);
@@ -422,17 +463,13 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
       )
         return false;
     }
-    // A.1 sólo admite retiros no terminales como estados de consulta sin bazas
-    // parciales; todas las invariantes históricas ya fueron comprobadas arriba.
-    if (estado.retirados.length > 0 && !estado.finalizada)
-      return (
-        estado.motivoFinalizacion === null &&
-        estado.equipoGanador === null &&
-        estado.bazasCompletadas.length === 0 &&
-        estado.bazaActual.salida === estado.mano.manoOriginal &&
-        estado.bazaActual.jugadas.length === 0 &&
-        estado.jugadorTurno === null
-      );
+    if (
+      !estado.finalizada &&
+      estado.retirados.length > 0 &&
+      estado.jugadorTurno === null &&
+      estado.bazaActual.jugadas.length === 0
+    )
+      return estado.motivoFinalizacion === null && estado.equipoGanador === null;
     return estado.finalizada
       ? estado.jugadorTurno === null
       : estado.jugadorTurno === orden[estado.bazaActual.jugadas.length];
@@ -450,8 +487,6 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
   if (!esEstadoJuegoCartasValido(estado))
     return rechazar("estado-invalido", "Estado de juego inválido.");
   if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
-  if (estado.retirados.length > 0)
-    return rechazar("estado-invalido", "Las bazas con retirados aún no están implementadas.");
   if (!accion || accion.tipo !== "jugar-carta" || !esCarta(accion.carta))
     return rechazar("carta-invalida", "Acción o carta inválida.");
   const jugadorMesa = estado.mano.mesa.jugadores.find((jugador) => jugador.id === accion.jugador);
@@ -472,9 +507,9 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
   }));
   const jugadas = [...estado.bazaActual.jugadas.map(copiarJugada), jugada];
   const eventos: EventoJuegoCartas[] = [{ tipo: "carta-jugada", jugada }];
-  if (jugadas.length < estado.mano.mesa.jugadores.length) {
-    const turno = obtenerOrdenReparto(estado.mano.mesa, estado.bazaActual.salida);
-    const siguiente = turno[jugadas.length - 1];
+  const orden = ordenBaza(estado.mano.mesa, estado.bazaActual.salida, estado.retirados, jugadas);
+  if (jugadas.length < orden.length) {
+    const siguiente = orden[jugadas.length];
     return {
       aceptada: true,
       estado: {
@@ -486,10 +521,16 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
       eventos,
     };
   }
-  const resultado = resolverBaza(estado.mano.mesa, estado.mano.muestra, estado.mano.manoOriginal, {
-    salida: estado.bazaActual.salida,
-    jugadas,
-  });
+  const resultado = resolverBaza(
+    estado.mano.mesa,
+    estado.mano.muestra,
+    estado.mano.manoOriginal,
+    {
+      salida: estado.bazaActual.salida,
+      jugadas,
+    },
+    estado.retirados,
+  );
   const baza: BazaCompletada = { salida: estado.bazaActual.salida, jugadas, resultado };
   const bazasCompletadas = [...estado.bazasCompletadas, baza];
   const progreso = evaluarResultadosBazas(
@@ -530,6 +571,104 @@ export const ejecutarCarta: TransicionJuegoCartas = (estado, accion) => {
     eventos,
   };
 };
+
+/** Retiro individual canónico; la liquidación de desafíos pertenece al coordinador. */
+export function retirarJugadorDeBazas(
+  estado: EstadoJuegoCartas,
+  jugador: string,
+): ResultadoTransicion<EstadoJuegoCartas, EventoJuegoCartas, RechazoJuegoCartas> {
+  if (!esEstadoJuegoCartasValido(estado))
+    return rechazar("estado-invalido", "Estado de juego inválido.");
+  if (estado.finalizada) return rechazar("mano-finalizada", "La mano ya finalizó.");
+  const participante = estado.mano.mesa.jugadores.find((item) => item.id === jugador);
+  if (!participante) return rechazar("jugador-inexistente", "El jugador no pertenece a la mesa.");
+  if (estado.retirados.includes(jugador))
+    return rechazar("jugador-retirado", "El jugador ya se retiró.");
+  const retirados = [...estado.retirados, jugador];
+  const equipoSinActivos = estado.mano.equipos.find((equipo) =>
+    estado.mano.mesa.jugadores
+      .filter((item) => item.equipo === equipo)
+      .every((item) => retirados.includes(item.id)),
+  );
+  const eventos: EventoJuegoCartas[] = [{ tipo: "jugador-retirado", jugador }];
+  if (equipoSinActivos) {
+    const equipoGanador = estado.mano.equipos.find((equipo) => equipo !== equipoSinActivos)!;
+    eventos.push({ tipo: "mano-decidida-por-mazo", equipo: equipoGanador });
+    return {
+      aceptada: true,
+      estado: {
+        ...estado,
+        retirados,
+        jugadorTurno: null,
+        finalizada: true,
+        equipoGanador,
+        motivoFinalizacion: "mazo",
+      },
+      eventos,
+    };
+  }
+  const orden = ordenBaza(
+    estado.mano.mesa,
+    estado.bazaActual.salida,
+    retirados,
+    estado.bazaActual.jugadas,
+  );
+  if (orden.length === estado.bazaActual.jugadas.length) {
+    const resultado = resolverBaza(
+      estado.mano.mesa,
+      estado.mano.muestra,
+      estado.mano.manoOriginal,
+      estado.bazaActual,
+      retirados,
+    );
+    const baza: BazaCompletada = {
+      salida: estado.bazaActual.salida,
+      jugadas: estado.bazaActual.jugadas.map(copiarJugada),
+      resultado,
+    };
+    const bazasCompletadas = [...estado.bazasCompletadas, baza];
+    const progreso = evaluarResultadosBazas(
+      estado.mano.equipos,
+      estado.mano.equipoManoOriginal,
+      bazasCompletadas.map((item) => item.resultado.equipoGanador),
+    );
+    eventos.push({ tipo: "baza-resuelta", baza });
+    if (progreso.finalizada) {
+      eventos.push({ tipo: "mano-decidida-por-bazas", equipo: progreso.equipoGanador! });
+      return {
+        aceptada: true,
+        estado: {
+          ...estado,
+          retirados,
+          bazaActual: { salida: estado.bazaActual.salida, jugadas: [] },
+          bazasCompletadas,
+          jugadorTurno: null,
+          finalizada: true,
+          equipoGanador: progreso.equipoGanador,
+          motivoFinalizacion: "bazas",
+        },
+        eventos,
+      };
+    }
+    return {
+      aceptada: true,
+      estado: {
+        ...estado,
+        retirados,
+        bazaActual: { salida: resultado.salidaSiguiente, jugadas: [] },
+        bazasCompletadas,
+        jugadorTurno: resultado.salidaSiguiente,
+      },
+      eventos,
+    };
+  }
+  const siguiente = orden[estado.bazaActual.jugadas.length];
+  return {
+    aceptada: true,
+    estado: { ...estado, retirados, jugadorTurno: siguiente },
+    eventos,
+  };
+}
 
 /** Cierra una mano sin fabricar bazas cuando un Truco pendiente es rechazado. */
 export function finalizarManoPorRechazoTruco(

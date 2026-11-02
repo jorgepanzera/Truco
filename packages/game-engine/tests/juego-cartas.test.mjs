@@ -15,6 +15,7 @@ import {
   jugadoresActivosDelEquipo,
   perteneceALaMesa,
   prepararMano,
+  retirarJugadorDeBazas,
   resolverBaza,
   siguienteJugadorActivo,
 } from "../dist/index.js";
@@ -76,6 +77,7 @@ test("resuelve piezas, alcahuete, parda y máximo por equipo sin sumar", () => {
   });
   assert.equal(r.equipoGanador, "e0");
   assert.equal(r.jerarquiaMaxima, 1);
+  assert.equal(r.autorHistorico, "j0");
   assert.equal(r.salidaSiguiente, "j0");
   const p = resolverBaza(mesa(4), c("copa", 6), "j0", {
     salida: "j1",
@@ -86,8 +88,21 @@ test("resuelve piezas, alcahuete, parda y máximo por equipo sin sumar", () => {
       { jugador: "j0", carta: c("espada", 4) },
     ],
   });
+  assert.equal(p.autorHistorico, null);
   assert.equal(p.equipoGanador, null);
   assert.equal(p.salidaSiguiente, "j0");
+  const empateCompaneros = resolverBaza(mesa(4), c("copa", 6), "j1", {
+    salida: "j1",
+    jugadas: [
+      { jugador: "j1", carta: c("basto", 4) },
+      { jugador: "j2", carta: c("oro", 3) },
+      { jugador: "j3", carta: c("espada", 4) },
+      { jugador: "j0", carta: c("copa", 3) },
+    ],
+  });
+  assert.equal(empateCompaneros.equipoGanador, "e0");
+  assert.equal(empateCompaneros.autorHistorico, "j2");
+  assert.equal(empateCompaneros.salidaSiguiente, "j2");
 });
 
 test("tabla exhaustiva §5.2 y rechazo de tercera innecesaria", () => {
@@ -130,6 +145,29 @@ test("turnos y transición rechazan jugadas fuera de turno sin mutar", () => {
   estado = jugar(estado, "j0");
   assert.equal(estado.jugadorTurno, "j1");
   assert.equal(estado.bazaActual.jugadas.length, 1);
+});
+
+test("retiro de bajo nivel conserva bazas históricas y salta al siguiente activo", () => {
+  const preparada = mano(4, c("oro", 2), [
+    [c("oro", 12), c("copa", 6), c("basto", 3)],
+    [c("espada", 1), c("basto", 4), c("copa", 5)],
+    [c("espada", 7), c("copa", 4), c("basto", 5)],
+    [c("oro", 3), c("espada", 4), c("basto", 7)],
+  ]);
+  const inicial = iniciarJuegoCartas(preparada);
+  const antes = JSON.stringify(inicial);
+  const retiro = retirarJugadorDeBazas(inicial, "j1");
+  assert.equal(retiro.aceptada, true);
+  assert.deepEqual(retiro.estado.retirados, ["j1"]);
+  assert.equal(retiro.estado.jugadorTurno, "j0");
+  assert.equal(JSON.stringify(inicial), antes);
+  let actual = retiro.estado;
+  for (const jugador of ["j0", "j2", "j3"]) actual = jugar(actual, jugador);
+  assert.equal(actual.bazasCompletadas.length, 1);
+  assert.equal(actual.bazasCompletadas[0].resultado.equipoGanador, "e0");
+  assert.equal(actual.jugadorTurno, "j0");
+  assert.equal(esEstadoJuegoCartasValido(actual), true);
+  assert.equal(retirarJugadorDeBazas(actual, "j1").rechazo.codigo, "jugador-retirado");
 });
 
 test("participación canónica deriva activos por asiento y valida retirados", () => {

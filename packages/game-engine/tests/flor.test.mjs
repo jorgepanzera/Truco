@@ -68,13 +68,19 @@ test("retiro en Contra Flor pendiente cancela al proponente y rechaza implícita
   const cancelado = liquidarFlorPorRetiro(pendiente, x, "a");
   assert.equal(cancelado.aceptada, true);
   assert.equal(cancelado.estado.historialDesafios[0].respuesta, "cancelado-por-retiro");
-  assert.deepEqual(cancelado.estado.adjudicaciones.map((a) => a.puntos), [0, 3]);
+  assert.deepEqual(
+    cancelado.estado.adjudicaciones.map((a) => a.puntos),
+    [0, 3],
+  );
   assert.equal(esEstadoFlorValido(cancelado.estado, x), true);
   assert.equal(JSON.stringify(pendiente), antes);
   const rechazo = liquidarFlorPorRetiro(pendiente, x, "b");
   assert.equal(rechazo.aceptada, true);
   assert.equal(rechazo.estado.historialDesafios[0].respuesta, "rechazo-implicito-por-retiro");
-  assert.deepEqual(rechazo.estado.adjudicaciones.map((a) => a.puntos), [3, 0]);
+  assert.deepEqual(
+    rechazo.estado.adjudicaciones.map((a) => a.puntos),
+    [3, 0],
+  );
   assert.equal(esEstadoFlorValido(rechazo.estado, x), true);
 });
 test("retiro conserva Flor ordinaria anunciada sin desafío", () => {
@@ -82,12 +88,18 @@ test("retiro conserva Flor ordinaria anunciada sin desafío", () => {
   const una = anunciarFlor(crearEstadoFlor(), x, "a").estado;
   const r = liquidarFlorPorRetiro(una, x, "a");
   assert.equal(r.aceptada, true);
-  assert.deepEqual(r.estado.adjudicaciones.map((a) => a.puntos), [3, 0]);
+  assert.deepEqual(
+    r.estado.adjudicaciones.map((a) => a.puntos),
+    [3, 0],
+  );
   assert.equal(esEstadoFlorValido(r.estado, x), true);
   const ambas = florPorEquipo();
   const dos = liquidarFlorPorRetiro(ambas.estado, ambas.x, "a");
   assert.equal(dos.aceptada, true);
-  assert.deepEqual(dos.estado.adjudicaciones.map((a) => a.puntos), [3, 3]);
+  assert.deepEqual(
+    dos.estado.adjudicaciones.map((a) => a.puntos),
+    [3, 3],
+  );
   assert.equal(esEstadoFlorValido(dos.estado, ambas.x), true);
 });
 
@@ -97,11 +109,17 @@ test("retiro en Contra Flor al Resto pendiente no crea victoria automática", ()
   const cancelado = liquidarFlorPorRetiro(pendiente, x, "a");
   assert.equal(cancelado.aceptada, true);
   assert.equal(cancelado.estado.resultadoTerminal, null);
-  assert.deepEqual(cancelado.estado.adjudicaciones.map((a) => a.puntos), [0, 3]);
+  assert.deepEqual(
+    cancelado.estado.adjudicaciones.map((a) => a.puntos),
+    [0, 3],
+  );
   const rechazo = liquidarFlorPorRetiro(pendiente, x, "b");
   assert.equal(rechazo.aceptada, true);
   assert.equal(rechazo.estado.resultadoTerminal, null);
-  assert.deepEqual(rechazo.estado.adjudicaciones.map((a) => a.puntos), [3, 0]);
+  assert.deepEqual(
+    rechazo.estado.adjudicaciones.map((a) => a.puntos),
+    [3, 0],
+  );
 });
 test("validación histórica de Flor rechaza anuncios, desafíos y cierres adulterados", () => {
   const sinFlor = contexto();

@@ -68,6 +68,8 @@ export type ContextoEnvido = Readonly<{
   jugadorTurno: string | null;
   bazasCompletadas: number;
   finalizada: boolean;
+  /** Participantes que aún pueden cantar o comparar. Si se omite, todos siguen activos. */
+  jugadoresActivos?: readonly string[];
   falta?: Readonly<{
     meta: MetaPuntos;
     puntajesIniciales: Readonly<Record<string, number>>;
@@ -132,6 +134,7 @@ export function compararTantosEnvido(
   manoOriginal: string,
   muestra: Carta,
   manos: readonly Readonly<{ jugador: string; cartas: readonly Carta[] }>[],
+  jugadoresElegibles?: readonly string[],
 ): ResultadoComparacionEnvido {
   validarMesa(mesa);
   const jugadores = mesa.jugadores;
@@ -141,17 +144,22 @@ export function compararTantosEnvido(
     manos.length !== jugadores.length
   )
     throw new TypeError("Comparación de Envido inválida.");
-  const resultados = manos.map((mano) => {
-    const jugador = jugadores.find((j) => j.id === mano.jugador);
-    if (!jugador) throw new TypeError("Jugador inválido.");
-    return {
-      jugador: jugador.id,
-      equipo: jugador.equipo,
-      resultado: calcularTantoEnvido(mano.cartas, muestra),
-    };
-  });
+  const elegibles = new Set(jugadoresElegibles ?? jugadores.map((jugador) => jugador.id));
+  if (!elegibles.size || [...elegibles].some((id) => !jugadores.some((j) => j.id === id)))
+    throw new TypeError("Elegibilidad de Envido inválida.");
+  const resultados = manos
+    .filter((mano) => elegibles.has(mano.jugador))
+    .map((mano) => {
+      const jugador = jugadores.find((j) => j.id === mano.jugador);
+      if (!jugador) throw new TypeError("Jugador inválido.");
+      return {
+        jugador: jugador.id,
+        equipo: jugador.equipo,
+        resultado: calcularTantoEnvido(mano.cartas, muestra),
+      };
+    });
   if (
-    new Set(resultados.map((r) => r.jugador)).size !== jugadores.length ||
+    new Set(resultados.map((r) => r.jugador)).size !== elegibles.size ||
     resultados.some((r) => r.resultado.tieneFlor)
   )
     return {
@@ -301,6 +309,16 @@ function cadenaPendienteValida(cadena: CadenaEnvidoPendiente, contexto: Contexto
   );
 }
 
+function estaActivo(contexto: ContextoEnvido, jugador: string): boolean {
+  return contexto.jugadoresActivos?.includes(jugador) ?? true;
+}
+
+function quedanActivosDelEquipo(contexto: ContextoEnvido, equipo: string): boolean {
+  return contexto.mesa.jugadores.some(
+    (jugador) => jugador.equipo === equipo && estaActivo(contexto, jugador.id),
+  );
+}
+
 export function esEstadoEnvidoValido(
   estado: EstadoEnvidoDominio,
   contexto: ContextoEnvido,
@@ -391,7 +409,7 @@ export function iniciarEnvido(
   if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
   if (!estado || estado.iniciado || estado.pendiente) return fallo("cadena-duplicada");
   const participante = contexto.mesa.jugadores.find((p) => p.id === jugador);
-  if (!participante) return fallo("jugador-inexistente");
+  if (!participante || !estaActivo(contexto, jugador)) return fallo("jugador-inactivo");
   if (contexto.finalizada || contexto.bazasCompletadas !== 0 || contexto.jugadorTurno !== jugador)
     return fallo("momento-invalido");
   return {
@@ -429,7 +447,7 @@ export function aumentarEnvidoEnJuego(
   if (!estado?.pendiente) return fallo("sin-cadena-pendiente");
   if (!cadenaPendienteValida(estado.pendiente, contexto)) return fallo("cadena-invalida");
   const p = contexto.mesa.jugadores.find((x) => x.id === jugador);
-  if (!p) return fallo("jugador-inexistente");
+  if (!p || !estaActivo(contexto, jugador)) return fallo("jugador-inactivo");
   try {
     return {
       aceptada: true,
@@ -454,7 +472,8 @@ export function responderNoQuiero(
   if (!estado?.pendiente) return fallo("sin-cadena-pendiente");
   if (!cadenaPendienteValida(estado.pendiente, contexto)) return fallo("cadena-invalida");
   const p = contexto.mesa.jugadores.find((x) => x.id === jugador);
-  if (!p || p.equipo !== estado.pendiente.equipoRespondedor) return fallo("respondedor-invalido");
+  if (!p || !estaActivo(contexto, jugador) || p.equipo !== estado.pendiente.equipoRespondedor)
+    return fallo("respondedor-invalido");
   return {
     aceptada: true,
     estado: {
@@ -475,12 +494,14 @@ export function responderQuiero(
   if (!estado?.pendiente) return fallo("sin-cadena-pendiente");
   if (!cadenaPendienteValida(estado.pendiente, contexto)) return fallo("cadena-invalida");
   const p = contexto.mesa.jugadores.find((x) => x.id === jugador);
-  if (!p || p.equipo !== estado.pendiente.equipoRespondedor) return fallo("respondedor-invalido");
+  if (!p || !estaActivo(contexto, jugador) || p.equipo !== estado.pendiente.equipoRespondedor)
+    return fallo("respondedor-invalido");
   const comparacion = compararTantosEnvido(
     contexto.mesa,
     contexto.manoOriginal,
     contexto.muestra,
     contexto.manos,
+    contexto.jugadoresActivos,
   );
   if (!comparacion.aplicable) return fallo("flor-pendiente");
   const faltaActual = estado.pendiente.cantos.at(-1)!.canto === "falta-envido";
@@ -519,6 +540,11 @@ export function liquidarEnvidoPorRetiro(
   const retirado = contexto.mesa.jugadores.find((jugador) => jugador.id === jugadorRetirado);
   if (!retirado) return fallo("jugador-inexistente");
   const cadena = estado.pendiente;
+  if (
+    contexto.jugadoresActivos?.includes(jugadorRetirado) === false &&
+    quedanActivosDelEquipo(contexto, retirado.equipo)
+  )
+    return { aceptada: true, estado, eventos: [] };
   if (retirado.equipo === cadena.equipoProponente) {
     const liquidacion: LiquidacionEnvidoPorRetiro = {
       causa: "propuesta-cancelada-por-retiro",
@@ -563,8 +589,11 @@ export function cancelarEnvidoPorFlor(
 ): ResultadoEnvido {
   if (!esEstadoEnvidoValido(estado, contexto)) return fallo("estado-invalido");
   if (!estado.pendiente) return { aceptada: true, estado, eventos: [] };
-  const jugadorFlor = contexto.mesa.jugadores.find((jugador) => jugador.id === respaldoFlor?.jugador);
-  if (!jugadorFlor || jugadorFlor.equipo !== respaldoFlor.equipo) return fallo("respaldo-flor-invalido");
+  const jugadorFlor = contexto.mesa.jugadores.find(
+    (jugador) => jugador.id === respaldoFlor?.jugador,
+  );
+  if (!jugadorFlor || jugadorFlor.equipo !== respaldoFlor.equipo)
+    return fallo("respaldo-flor-invalido");
   const cancelacion: CancelacionEnvidoPorFlor = {
     causa: "cancelado-por-flor",
     jugadorFlor: respaldoFlor.jugador,
@@ -633,7 +662,8 @@ export function esCancelacionEnvidoPorFlorValida(
     !cancelacion ||
     cancelacion.causa !== "cancelado-por-flor" ||
     !contexto.mesa.jugadores.some(
-      (jugador) => jugador.id === cancelacion.jugadorFlor && jugador.equipo === cancelacion.equipoFlor,
+      (jugador) =>
+        jugador.id === cancelacion.jugadorFlor && jugador.equipo === cancelacion.equipoFlor,
     ) ||
     !Array.isArray(cancelacion.historial)
   )

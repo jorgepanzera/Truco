@@ -28,7 +28,8 @@ export type EstadoFlorDominio = Readonly<{
     tipo: DesafioFlor;
     proponente: string;
     equipo: string;
-    respuesta: "quiero" | "no-quiero" | "cancelado-por-retiro" | "rechazo-implicito-por-retiro" | null;
+    respuesta:
+      "quiero" | "no-quiero" | "cancelado-por-retiro" | "rechazo-implicito-por-retiro" | null;
   }>[];
   oportunidadDesafioConsumida: boolean;
   resultadoTerminal: Readonly<{ tipo: "contra-flor-al-resto-ganada"; equipo: string }> | null;
@@ -166,29 +167,73 @@ export function liquidarFlorPorRetiro(
       eventos: [{ tipo: "flor-adjudicada", adjudicaciones }],
     };
   }
+  const retiroYaAplicado = retirado.activa === false;
+  const puedeSostener = (equipo: string) =>
+    contexto.jugadores.some(
+      (jugador) =>
+        jugador.equipo === equipo &&
+        (jugador.activa ?? true) &&
+        tieneFlorCalculada(jugador.cartas, contexto.muestra) &&
+        (estado.anuncios.some((anuncio) => anuncio.jugador === jugador.id) ||
+          (!jugador.jugoPrimeraCarta && !estado.derechosPerdidos.includes(jugador.id))),
+    );
+  if (
+    retiroYaAplicado &&
+    puedeSostener(desafio.equipoProponente) &&
+    puedeSostener(desafio.equipoRespondedor)
+  )
+    return { aceptada: true, estado, eventos: [] };
   const esProponente = retirado.equipo === desafio.equipoProponente;
+  if (retiroYaAplicado && esProponente && puedeSostener(desafio.equipoProponente))
+    return { aceptada: true, estado, eventos: [] };
+  if (retiroYaAplicado && !esProponente && puedeSostener(desafio.equipoRespondedor))
+    return { aceptada: true, estado, eventos: [] };
   const causa: "cancelado-por-retiro" | "rechazo-implicito-por-retiro" = esProponente
     ? "cancelado-por-retiro"
     : "rechazo-implicito-por-retiro";
-  const historial = desafio.tipo === "contra-flor-al-resto"
-    ? estado.historialDesafios.map((registro) =>
-        registro.respuesta === null ? { ...registro, respuesta: causa } : registro,
-      )
-    : [...estado.historialDesafios, { tipo: desafio.tipo, proponente: desafio.proponente, equipo: desafio.equipoProponente, respuesta: causa }];
+  const historial =
+    desafio.tipo === "contra-flor-al-resto"
+      ? estado.historialDesafios.map((registro) =>
+          registro.respuesta === null ? { ...registro, respuesta: causa } : registro,
+        )
+      : [
+          ...estado.historialDesafios,
+          {
+            tipo: desafio.tipo,
+            proponente: desafio.proponente,
+            equipo: desafio.equipoProponente,
+            respuesta: causa,
+          },
+        ];
   const equipos = [...new Set(contexto.jugadores.map((jugador) => jugador.equipo))];
   const adjudicaciones = equipos.map((equipo) => ({
     equipo,
     puntos: esProponente
-      ? estado.anuncios.filter((anuncio) => anuncio.equipo === equipo && equipo !== retirado.equipo).length * 3
+      ? estado.anuncios.filter((anuncio) => anuncio.equipo === equipo && equipo !== retirado.equipo)
+          .length * 3
       : equipo === desafio.equipoProponente
         ? estado.anuncios.filter((anuncio) => anuncio.equipo === equipo).length * 3
         : 0,
-    motivo: esProponente ? "sin-desafio" as const : "rechazo" as const,
+    motivo: esProponente ? ("sin-desafio" as const) : ("rechazo" as const),
   }));
   return {
     aceptada: true,
-    estado: { ...estado, pendiente: null, cerrado: true, historialDesafios: historial, adjudicaciones, resultadoTerminal: null },
-    eventos: [{ tipo: esProponente ? "contra-flor-cancelada-por-retiro" : "contra-flor-rechazo-implicito-por-retiro", jugador: jugadorRetirado }],
+    estado: {
+      ...estado,
+      pendiente: null,
+      cerrado: true,
+      historialDesafios: historial,
+      adjudicaciones,
+      resultadoTerminal: null,
+    },
+    eventos: [
+      {
+        tipo: esProponente
+          ? "contra-flor-cancelada-por-retiro"
+          : "contra-flor-rechazo-implicito-por-retiro",
+        jugador: jugadorRetirado,
+      },
+    ],
   };
 }
 
@@ -198,6 +243,8 @@ export type ContextoFlor = Readonly<{
     equipo: string;
     cartas: readonly Carta[];
     jugoPrimeraCarta: boolean;
+    /** Un retirado conserva su historial, pero no derechos ni capacidad de responder. */
+    activa?: boolean;
   }>[];
   muestra: Carta;
   jugadorTurno: string | null;
@@ -241,6 +288,7 @@ export function proponerContraFlor(
   const p = contexto.jugadores.find((j) => j.id === jugador);
   if (
     !p ||
+    !(p.activa ?? true) ||
     estado.adjudicaciones.length > 0 ||
     estado.resultadoTerminal !== null ||
     estado.oportunidadDesafioConsumida ||
@@ -279,7 +327,13 @@ export function responderContraFlor(
     return fallo("estado-flor-incoherente");
   const p = contexto.jugadores.find((j) => j.id === jugador),
     desafio = estado.pendiente;
-  if (!p || !desafio || desafio.tipo !== "contra-flor" || p.equipo !== desafio.equipoRespondedor)
+  if (
+    !p ||
+    !(p.activa ?? true) ||
+    !desafio ||
+    desafio.tipo !== "contra-flor" ||
+    p.equipo !== desafio.equipoRespondedor
+  )
     return fallo("respuesta-contra-flor-invalida");
   const perdidos =
     respuesta === "no-quiero"
@@ -332,6 +386,7 @@ export function proponerContraFlorAlResto(
   const directa = estado.pendiente === null && estado.historialDesafios.length === 0;
   if (
     !p ||
+    !(p.activa ?? true) ||
     estado.adjudicaciones.length > 0 ||
     estado.resultadoTerminal !== null ||
     estado.oportunidadDesafioConsumida ||
@@ -378,6 +433,7 @@ export function responderContraFlorAlResto(
     desafio = estado.pendiente;
   if (
     !p ||
+    !(p.activa ?? true) ||
     !desafio ||
     desafio.tipo !== "contra-flor-al-resto" ||
     p.equipo !== desafio.equipoRespondedor
@@ -560,6 +616,7 @@ function derechos(contexto: ContextoFlor, estado: EstadoFlorDominio): string[] {
   return contexto.jugadores
     .filter(
       (j) =>
+        (j.activa ?? true) &&
         tieneFlorCalculada(j.cartas, contexto.muestra) &&
         !j.jugoPrimeraCarta &&
         !estado.anuncios.some((a) => a.jugador === j.id) &&
@@ -669,7 +726,11 @@ function anunciarFlorConExcepcionDeTurno(
     return fallo("estado-flor-incoherente");
   if (estado.cerrado) return fallo("fase-cerrada");
   const participante = contexto.jugadores.find((j) => j.id === jugador);
-  if (!participante || !tieneFlorCalculada(participante.cartas, contexto.muestra))
+  if (
+    !participante ||
+    !(participante.activa ?? true) ||
+    !tieneFlorCalculada(participante.cartas, contexto.muestra)
+  )
     return fallo("flor-inexistente");
   if (estado.anuncios.some((a) => a.jugador === jugador)) return fallo("flor-duplicada");
   if (estado.derechosPerdidos.includes(jugador) || participante.jugoPrimeraCarta)

@@ -464,7 +464,11 @@ test("Flor cancela Envido pendiente sin puntos y no permite reabrirlo", () => {
       ...flor.estado,
       envido: {
         ...flor.estado.envido,
-        cancelacionPorFlor: { ...flor.estado.envido.cancelacionPorFlor, jugadorFlor: "b", equipoFlor: "B" },
+        cancelacionPorFlor: {
+          ...flor.estado.envido.cancelacionPorFlor,
+          jugadorFlor: "b",
+          equipoFlor: "B",
+        },
       },
     },
   ]) {

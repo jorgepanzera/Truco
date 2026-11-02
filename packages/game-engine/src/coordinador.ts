@@ -18,6 +18,7 @@ import {
   estaActivo,
   finalizarManoPorMazo,
   finalizarManoPorRechazoTruco,
+  retirarJugadorDeBazas,
   type AccionJuegoCartas,
   type EstadoJuegoCartas,
   type EventoJuegoCartas,
@@ -74,7 +75,17 @@ export type EstadoLiquidacionMazo = Readonly<{
   equipoGanador: string;
   causa: CausaVictoriaCompetitiva;
   puntos: "pendiente" | "realizada";
-  oportunidadFlor: Readonly<{ jugador: string; estado: "pendiente" | "consumida"; duracionMs: 10000 }> | null;
+  oportunidadFlor: Readonly<{
+    jugador: string;
+    estado: "pendiente" | "consumida";
+    duracionMs: 10000;
+  }> | null;
+  /** Cola 2v2 de derechos individuales conservados; los vencimientos pertenecen a 5G. */
+  oportunidadesFlor?: readonly Readonly<{
+    jugador: string;
+    estado: "pendiente" | "consumida";
+    duracionMs: 10000;
+  }>[];
 }>;
 export type CausaVictoriaCompetitiva = "bazas" | "rechazo-truco" | "mazo" | "contra-flor-al-resto";
 /** Separa victoria competitiva, liquidación futura y cierre sin crear adjudicaciones nuevas. */
@@ -243,11 +254,20 @@ export function esCicloCoherenteConEstado(
   adjudicacionTruco: AdjudicacionTrucoCanonica | null = null,
 ): boolean {
   const liquidacionEnvido = envido?.liquidacionPorRetiro;
-  if (liquidacionEnvido != null && liquidacionMazo === null) return false;
   const retiradoEnvido = liquidacionEnvido
     ? juego.mano.mesa.jugadores.find((jugador) => jugador.id === liquidacionEnvido.jugadorRetirado)
     : undefined;
   if (liquidacionEnvido != null) {
+    const retiroEnvido2v2Coherente =
+      juego.mano.mesa.modalidad === "2v2" &&
+      juego.retirados.includes(liquidacionEnvido.jugadorRetirado) &&
+      !!retiradoEnvido &&
+      !juego.mano.mesa.jugadores.some(
+        (jugador) => jugador.equipo === retiradoEnvido.equipo && estaActivo(juego, jugador.id),
+      ) &&
+      juego.finalizada &&
+      juego.equipoGanador !== null &&
+      juego.equipoGanador !== retiradoEnvido.equipo;
     const retiroEnvidoCoherente =
       juego.mano.mesa.modalidad === "1v1" &&
       juego.retirados.length === 1 &&
@@ -258,7 +278,65 @@ export function esCicloCoherenteConEstado(
       (liquidacionEnvido.causa === "propuesta-cancelada-por-retiro"
         ? liquidacionEnvido.equipo === retiradoEnvido.equipo
         : liquidacionEnvido.equipo === juego.equipoGanador);
-    if (!retiroEnvidoCoherente) return false;
+    if (!retiroEnvidoCoherente && !retiroEnvido2v2Coherente) return false;
+  }
+  if (liquidacionEnvido != null && liquidacionMazo === null && juego.mano.mesa.modalidad !== "2v2")
+    return false;
+  if (liquidacionMazo !== null && juego.mano.mesa.modalidad === "2v2") {
+    const oportunidades = liquidacionMazo.oportunidadesFlor;
+    const orden = juego.mano.ordenReparto;
+    const oportunidadesValidas =
+      Array.isArray(oportunidades) &&
+      new Set(oportunidades.map((oportunidad) => oportunidad.jugador)).size ===
+        oportunidades.length &&
+      oportunidades.every((oportunidad, indice) => {
+        const jugador = juego.mano.mesa.jugadores.find((item) => item.id === oportunidad.jugador);
+        const mano = juego.mano.manos.find((item) => item.jugador === oportunidad.jugador);
+        return (
+          !!jugador &&
+          !!mano &&
+          jugador.equipo === liquidacionMazo.equipoGanador &&
+          estaActivo(juego, jugador.id) &&
+          tieneFlorCalculada(mano.cartas, juego.mano.muestra) &&
+          oportunidad.duracionMs === 10000 &&
+          (oportunidad.estado === "pendiente" || oportunidad.estado === "consumida") &&
+          (oportunidad.estado !== "consumida" ||
+            flor?.anuncios.some((a) => a.jugador === jugador.id)) &&
+          (indice === 0 ||
+            orden.indexOf(oportunidades[indice - 1]!.jugador) < orden.indexOf(jugador.id))
+        );
+      }) &&
+      oportunidades.every(
+        (oportunidad, indice) =>
+          oportunidad.estado !== "pendiente" ||
+          oportunidades.slice(indice).every((item) => item.estado === "pendiente"),
+      );
+    const ultimaPropuesta = truco?.historialPropuestas.at(-1);
+    const rechazoImplicito =
+      adjudicacionTruco?.causa === "rechazo-implicito-por-retiro" &&
+      ultimaPropuesta?.respuesta === "rechazo-implicito-por-retiro" &&
+      ultimaPropuesta.equipoProponente === adjudicacionTruco.equipo;
+    const nivel = truco?.apuestaActiva?.nivel ?? null;
+    const manoPorMazo =
+      adjudicacionTruco?.causa === "mano-por-mazo" &&
+      adjudicacionTruco.equipo === liquidacionMazo.equipoGanador &&
+      adjudicacionTruco.puntos === puntosPorApuestaTruco(nivel) &&
+      adjudicacionTruco.nivelAceptado === nivel;
+    return (
+      juego.finalizada &&
+      juego.motivoFinalizacion === "mazo" &&
+      juego.equipoGanador === liquidacionMazo.equipoGanador &&
+      liquidacionMazo.causa === "mazo" &&
+      liquidacionMazo.puntos === "realizada" &&
+      liquidacionMazo.oportunidadFlor === null &&
+      oportunidadesValidas &&
+      (rechazoImplicito || manoPorMazo) &&
+      (ciclo.fase === "victoria-competitiva-determinada" ||
+        ciclo.fase === "liquidacion" ||
+        ciclo.fase === "cierre-definitivo") &&
+      ciclo.equipoGanador === liquidacionMazo.equipoGanador &&
+      ciclo.causa === "mazo"
+    );
   }
   if (liquidacionMazo !== null) {
     const propuestaCancelada = Array.isArray(truco?.historialPropuestas)
@@ -323,12 +401,13 @@ export function esCicloCoherenteConEstado(
       liquidacionMazo.puntos === "pendiente" &&
       adjudicacionTruco === null &&
       (liquidacionMazo.oportunidadFlor?.estado === "consumida"
-        ? !!flor && esOportunidadFlorConsumidaCoherente(juego, flor, liquidacionMazo.oportunidadFlor)
+        ? !!flor &&
+          esOportunidadFlorConsumidaCoherente(juego, flor, liquidacionMazo.oportunidadFlor)
         : elegible === null
-        ? liquidacionMazo.oportunidadFlor === null
-        : liquidacionMazo.oportunidadFlor?.jugador === elegible &&
-          liquidacionMazo.oportunidadFlor.duracionMs === 10000 &&
-          liquidacionMazo.oportunidadFlor.estado === "pendiente") &&
+          ? liquidacionMazo.oportunidadFlor === null
+          : liquidacionMazo.oportunidadFlor?.jugador === elegible &&
+            liquidacionMazo.oportunidadFlor.duracionMs === 10000 &&
+            liquidacionMazo.oportunidadFlor.estado === "pendiente") &&
       ciclo.fase === "victoria-competitiva-determinada" &&
       ciclo.equipoGanador === liquidacionMazo.equipoGanador &&
       ciclo.causa === "mazo"
@@ -399,9 +478,7 @@ export function esCicloCoherenteConEstado(
       ciclo.equipoGanador === equipoGanador
     );
   }
-  const adjudicacionPorBazasEsperada = truco
-    ? adjudicacionTrucoPorBazas(juego, truco)
-    : null;
+  const adjudicacionPorBazasEsperada = truco ? adjudicacionTrucoPorBazas(juego, truco) : null;
   const bazasCoherente =
     adjudicacionTruco?.causa === "mano-por-bazas" &&
     !!adjudicacionPorBazasEsperada &&
@@ -419,12 +496,41 @@ export function esCicloCoherenteConEstado(
       ciclo.equipoGanador === adjudicacionTruco!.equipo
     );
   }
-  if (adjudicacionTruco !== null) return false;
+  if (
+    adjudicacionTruco !== null &&
+    !(
+      juego.mano.mesa.modalidad === "2v2" &&
+      juego.finalizada &&
+      juego.motivoFinalizacion === "mazo" &&
+      adjudicacionTruco.causa === "rechazo-implicito-por-retiro"
+    )
+  )
+    return false;
   if (resultadoPartida)
     return (
       ciclo.fase === "cierre-definitivo" &&
       ciclo.causa === "contra-flor-al-resto" &&
       ciclo.equipoGanador === resultadoPartida.equipoGanador
+    );
+  if (
+    juego.mano.mesa.modalidad === "2v2" &&
+    juego.finalizada &&
+    juego.motivoFinalizacion === "mazo" &&
+    juego.equipoGanador !== null &&
+    liquidacionMazo === null &&
+    ciclo.fase === "victoria-competitiva-determinada"
+  )
+    return (
+      ciclo.equipoGanador === juego.equipoGanador &&
+      ciclo.causa === "mazo" &&
+      (adjudicacionTruco === null ||
+        (adjudicacionTruco.causa === "rechazo-implicito-por-retiro" &&
+          propuestaRechazada?.respuesta === "rechazo-implicito-por-retiro" &&
+          propuestaRechazada.equipoProponente === adjudicacionTruco.equipo &&
+          propuestaRechazada.nivel === adjudicacionTruco.nivelPropuesto &&
+          propuestaRechazada.orden === adjudicacionTruco.propuestaOrden &&
+          propuestaRechazada.jugadorRetirado === adjudicacionTruco.jugadorRetirado &&
+          adjudicacionTruco.equipo === juego.equipoGanador))
     );
   if (juego.finalizada)
     return (
@@ -468,6 +574,9 @@ export function obtenerContextoEnvido(
     jugadorTurno: juego.jugadorTurno,
     bazasCompletadas: juego.bazasCompletadas.length,
     finalizada: juego.finalizada,
+    jugadoresActivos: juego.mano.mesa.jugadores
+      .filter((jugador) => estaActivo(juego, jugador.id))
+      .map((jugador) => jugador.id),
     falta: {
       meta: contextoInicio.metaPuntos,
       puntajesIniciales: contextoInicio.puntajesIniciales,
@@ -488,6 +597,7 @@ export function obtenerContextoFlor(
       jugoPrimeraCarta:
         (juego.cartasDisponibles.find((disponibles) => disponibles.jugador === mano.jugador)?.cartas
           .length ?? 0) < 3,
+      activa: estaActivo(juego, mano.jugador),
     })),
     muestra: juego.mano.muestra,
     jugadorTurno: juego.jugadorTurno,
@@ -511,6 +621,9 @@ export function obtenerContextoTruco(
     manoFinalizada: juego.finalizada,
     florPendiente: flor.pendiente !== null,
     envidoPendiente: envido.pendiente !== null,
+    jugadoresActivos: juego.mano.mesa.jugadores
+      .filter((jugador) => estaActivo(juego, jugador.id))
+      .map((jugador) => jugador.id),
   };
 }
 function rechazo(codigo: string, mensaje: string) {
@@ -611,9 +724,7 @@ function esOportunidadFlorConsumidaCoherente(
   );
 }
 /** AUD-07: consulta pura; no crea ni consume la oportunidad excepcional. */
-export function obtenerElegibleFlorExcepcional(
-  estado: EstadoManoCoordinada,
-): string | null {
+export function obtenerElegibleFlorExcepcional(estado: EstadoManoCoordinada): string | null {
   const juego = estado?.juego;
   if (
     !juego ||
@@ -623,7 +734,9 @@ export function obtenerElegibleFlorExcepcional(
     !juego.equipoGanador
   )
     return null;
-  const ganador = juego.mano.mesa.jugadores.find((jugador) => jugador.equipo === juego.equipoGanador);
+  const ganador = juego.mano.mesa.jugadores.find(
+    (jugador) => jugador.equipo === juego.equipoGanador,
+  );
   if (!ganador || !estaActivo(juego, ganador.id)) return null;
   const mano = juego.mano.manos.find((item) => item.jugador === ganador.id);
   return mano &&
@@ -632,21 +745,52 @@ export function obtenerElegibleFlorExcepcional(
     ? ganador.id
     : null;
 }
+
+/** §7.8: derechos de Flor que subsisten tras abandono completo, en orden antihorario. */
+export function obtenerOportunidadesFlorPorAbandono(
+  estado: Pick<EstadoManoCoordinada, "juego" | "flor">,
+): readonly string[] {
+  const { juego, flor } = estado;
+  if (
+    juego.mano.mesa.modalidad !== "2v2" ||
+    !juego.finalizada ||
+    juego.motivoFinalizacion !== "mazo" ||
+    !juego.equipoGanador
+  )
+    return [];
+  return juego.mano.ordenReparto.filter((jugadorId) => {
+    const jugador = juego.mano.mesa.jugadores.find((item) => item.id === jugadorId);
+    const mano = juego.mano.manos.find((item) => item.jugador === jugadorId);
+    return (
+      !!jugador &&
+      !!mano &&
+      jugador.equipo === juego.equipoGanador &&
+      estaActivo(juego, jugadorId) &&
+      tieneFlorCalculada(mano.cartas, juego.mano.muestra) &&
+      !flor.anuncios.some((anuncio) => anuncio.jugador === jugadorId) &&
+      !flor.derechosPerdidos.includes(jugadorId) &&
+      (juego.cartasDisponibles.find((disponibles) => disponibles.jugador === jugadorId)?.cartas
+        .length ?? 0) === 3
+    );
+  });
+}
 export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: AccionCoordinada) {
   if (!estado || !esEstadoJuegoCartasValido(estado.juego))
     return rechazo("estado-invalido", "Estado de cartas inválido.");
   if (!validarContextoInicioMano(estado.juego, estado.contextoInicio))
     return rechazo("contexto-inicial-invalido", "Contexto inicial inválido.");
-  if (!esCicloCoherenteConEstado(
-    estado.ciclo,
-    estado.juego,
-    estado.resultadoPartida,
-    estado.liquidacionMazo,
-    estado.flor,
-    estado.truco,
-    estado.envido,
-    estado.adjudicacionTruco,
-  ))
+  if (
+    !esCicloCoherenteConEstado(
+      estado.ciclo,
+      estado.juego,
+      estado.resultadoPartida,
+      estado.liquidacionMazo,
+      estado.flor,
+      estado.truco,
+      estado.envido,
+      estado.adjudicacionTruco,
+    )
+  )
     return rechazo("estado-invalido", "Ciclo de mano incoherente con el estado canónico.");
   if (
     estado.resultadoPartida !== null &&
@@ -691,6 +835,75 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
     return rechazo("partida-finalizada", "La partida ya tiene un resultado terminal.");
   const oportunidad = estado.liquidacionMazo?.oportunidadFlor;
   if (estado.juego.finalizada) {
+    if (estado.juego.mano.mesa.modalidad === "2v2") {
+      const liquidacion = estado.liquidacionMazo;
+      const oportunidades = liquidacion?.oportunidadesFlor;
+      const actual = oportunidades?.find((item) => item.estado === "pendiente");
+      if (accion?.tipo === "cerrar-mano-mazo") {
+        if (
+          !liquidacion ||
+          actual ||
+          estado.flor.pendiente !== null ||
+          estado.envido.pendiente !== null ||
+          estado.truco.propuestaPendiente !== null
+        )
+          return rechazo(
+            "cierre-mano-mazo-no-disponible",
+            "La liquidación 2v2 aún conserva obligaciones reglamentarias.",
+          );
+        return {
+          aceptada: true as const,
+          estado: {
+            ...estado,
+            ciclo: {
+              fase: "cierre-definitivo",
+              equipoGanador: liquidacion.equipoGanador,
+              causa: "mazo",
+            },
+          },
+          eventos: [] as const,
+        };
+      }
+      if (
+        (accion?.tipo !== "anunciar-flor" && accion?.tipo !== "vencer-oportunidad-flor") ||
+        !liquidacion ||
+        !actual ||
+        accion.jugador !== actual.jugador
+      )
+        return rechazo("mano-finalizada", "La mano ya finalizó competitivamente.");
+      const anuncio = anunciarFlorDentroDeConFlorQuiero(estado.flor, contextoFlor, accion.jugador);
+      if (!anuncio.aceptada)
+        return rechazo(anuncio.codigo, "Anuncio de Flor conservada rechazado.");
+      const oportunidadesActualizadas = oportunidades!.map((item) =>
+        item.jugador === actual.jugador ? { ...item, estado: "consumida" as const } : item,
+      );
+      const contextoCierre = obtenerContextoFlor(
+        estado.juego,
+        estado.contextoInicio,
+        oportunidadesActualizadas.every((item) => item.estado === "consumida"),
+      );
+      const cierre = contextoCierre.faseFlorConfirmada
+        ? confirmarFaseFlor(anuncio.estado, contextoCierre)
+        : { aceptada: true as const, estado: anuncio.estado, eventos: [] as const };
+      if (!cierre.aceptada) return rechazo(cierre.codigo, "No se pudo cerrar la Flor conservada.");
+      return {
+        aceptada: true as const,
+        estado: {
+          ...estado,
+          flor: cierre.estado,
+          liquidacionMazo: {
+            ...liquidacion,
+            oportunidadesFlor: oportunidadesActualizadas,
+          },
+          ciclo: {
+            fase: "liquidacion",
+            equipoGanador: liquidacion.equipoGanador,
+            causa: "mazo",
+          },
+        },
+        eventos: [...anuncio.eventos, ...cierre.eventos],
+      };
+    }
     if (accion?.tipo === "cerrar-mano-mazo") {
       const liquidacion = estado.liquidacionMazo;
       if (
@@ -705,7 +918,10 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
         estado.envido.pendiente !== null ||
         estado.truco.propuestaPendiente !== null
       )
-        return rechazo("cierre-mano-mazo-no-disponible", "El cierre definitivo por mazo no está disponible.");
+        return rechazo(
+          "cierre-mano-mazo-no-disponible",
+          "El cierre definitivo por mazo no está disponible.",
+        );
       return {
         aceptada: true as const,
         estado: {
@@ -731,7 +947,10 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
         estado.envido.pendiente !== null ||
         estado.truco.propuestaPendiente !== null
       )
-        return rechazo("liquidacion-mazo-no-disponible", "La liquidación de mano por mazo no está disponible.");
+        return rechazo(
+          "liquidacion-mazo-no-disponible",
+          "La liquidación de mano por mazo no está disponible.",
+        );
       const nivel = estado.truco.apuestaActiva?.nivel ?? null;
       const adjudicacion: AdjudicacionTrucoPorBazas = {
         equipo: liquidacion.equipoGanador,
@@ -742,13 +961,13 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       const jugadorRetirado = estado.juego.retirados[0];
       if (!jugadorRetirado)
         return rechazo("estado-invalido", "No existe un jugador retirado para liquidar el mazo.");
-      const flor = estado.flor.anuncios.length > 0 &&
+      const flor =
+        estado.flor.anuncios.length > 0 &&
         !estado.flor.cerrado &&
         estado.flor.adjudicaciones.length === 0
-        ? liquidarFlorPorRetiro(estado.flor, contextoFlor, jugadorRetirado)
-        : { aceptada: true as const, estado: estado.flor, eventos: [] as const };
-      if (!flor.aceptada)
-        return rechazo(flor.codigo, "No se pudo liquidar la Flor por mazo.");
+          ? liquidarFlorPorRetiro(estado.flor, contextoFlor, jugadorRetirado)
+          : { aceptada: true as const, estado: estado.flor, eventos: [] as const };
+      if (!flor.aceptada) return rechazo(flor.codigo, "No se pudo liquidar la Flor por mazo.");
       return {
         aceptada: true as const,
         estado: {
@@ -769,7 +988,11 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
         eventos: [...flor.eventos, { tipo: "mazo-adjudicado", jugadorRetirado, adjudicacion }],
       };
     }
-    if ((accion?.tipo !== "anunciar-flor" && accion?.tipo !== "vencer-oportunidad-flor") || !oportunidad || oportunidad.estado !== "pendiente")
+    if (
+      (accion?.tipo !== "anunciar-flor" && accion?.tipo !== "vencer-oportunidad-flor") ||
+      !oportunidad ||
+      oportunidad.estado !== "pendiente"
+    )
       return rechazo("mano-finalizada", "La mano ya finalizó.");
     if (accion.jugador !== oportunidad.jugador)
       return rechazo("oportunidad-flor-invalida", "La oportunidad pertenece a otro jugador.");
@@ -780,16 +1003,122 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       estado: {
         ...estado,
         flor: anuncio.estado,
-        liquidacionMazo: { ...estado.liquidacionMazo!, oportunidadFlor: { ...oportunidad, estado: "consumida" } },
+        liquidacionMazo: {
+          ...estado.liquidacionMazo!,
+          oportunidadFlor: { ...oportunidad, estado: "consumida" },
+        },
       },
       eventos: anuncio.eventos,
     };
   }
   if (accion?.tipo === "liquidar-puntos-mazo")
-    return rechazo("liquidacion-mazo-no-disponible", "La mano aún no está disponible para liquidación por mazo.");
+    return rechazo(
+      "liquidacion-mazo-no-disponible",
+      "La mano aún no está disponible para liquidación por mazo.",
+    );
   if (accion?.tipo === "irse-al-mazo") {
-    if (estado.juego.mano.mesa.modalidad !== "1v1")
-      return rechazo("mazo-2v2-no-implementado", "Irse al mazo en 2v2 aún no está implementado.");
+    if (estado.juego.mano.mesa.modalidad === "2v2") {
+      const retiro = retirarJugadorDeBazas(estado.juego, accion.jugador);
+      if (!retiro.aceptada) return rechazo(retiro.rechazo.codigo, retiro.rechazo.mensaje);
+      const contextoRetiroEnvido = obtenerContextoEnvido(retiro.estado, estado.contextoInicio);
+      const contextoRetiroFlor = obtenerContextoFlor(retiro.estado, estado.contextoInicio);
+      const florPendiente = estado.flor.pendiente
+        ? liquidarFlorPorRetiro(estado.flor, contextoRetiroFlor, accion.jugador)
+        : { aceptada: true as const, estado: estado.flor, eventos: [] as const };
+      if (!florPendiente.aceptada)
+        return rechazo(florPendiente.codigo, "No se pudo liquidar la Flor por retiro.");
+      const envidoPendiente = estado.envido.pendiente
+        ? liquidarEnvidoPorRetiro(estado.envido, contextoRetiroEnvido, accion.jugador)
+        : { aceptada: true as const, estado: estado.envido, eventos: [] as const };
+      if (!envidoPendiente.aceptada)
+        return rechazo(envidoPendiente.codigo, "No se pudo liquidar el Envido por retiro.");
+      const equipoRetirado = retiro.estado.mano.mesa.jugadores.find(
+        (jugador) => jugador.id === accion.jugador,
+      )!.equipo;
+      const equipoSinActivos = !retiro.estado.mano.mesa.jugadores.some(
+        (jugador) => jugador.equipo === equipoRetirado && estaActivo(retiro.estado, jugador.id),
+      );
+      const contextoRetiroTruco = {
+        ...obtenerContextoTruco(retiro.estado, envidoPendiente.estado, florPendiente.estado),
+        // La consecuencia del retiro se evalúa sobre la propuesta que estaba pendiente justo antes
+        // de que el mazo complete la victoria competitiva.
+        manoFinalizada: false,
+      };
+      const trucoPendiente =
+        equipoSinActivos && estado.truco.propuestaPendiente
+          ? liquidarTrucoPorRetiro(estado.truco, contextoRetiroTruco, accion.jugador)
+          : {
+              aceptada: true as const,
+              estado: estado.truco,
+              eventos: [] as const,
+              liquidacion: null,
+            };
+      if (!trucoPendiente.aceptada)
+        return rechazo(trucoPendiente.codigo, "No se pudo liquidar el Truco por retiro.");
+      const propuesta = trucoPendiente.estado.historialPropuestas.at(-1);
+      const adjudicacionTruco =
+        trucoPendiente.liquidacion?.causa === "rechazo-implicito-por-retiro" &&
+        propuesta?.respuesta === "rechazo-implicito-por-retiro"
+          ? {
+              causa: "rechazo-implicito-por-retiro" as const,
+              equipo: trucoPendiente.liquidacion.equipo,
+              puntos: trucoPendiente.liquidacion.puntos as 1 | 2 | 3,
+              nivelPropuesto: propuesta.nivel,
+              propuestaOrden: propuesta.orden,
+              jugadorRetirado: accion.jugador,
+            }
+          : retiro.estado.finalizada && retiro.estado.equipoGanador
+            ? {
+                causa: "mano-por-mazo" as const,
+                equipo: retiro.estado.equipoGanador,
+                puntos: puntosPorApuestaTruco(estado.truco.apuestaActiva?.nivel ?? null),
+                nivelAceptado: estado.truco.apuestaActiva?.nivel ?? null,
+              }
+            : estado.adjudicacionTruco;
+      const liquidacionMazo =
+        retiro.estado.finalizada && retiro.estado.equipoGanador
+          ? {
+              equipoGanador: retiro.estado.equipoGanador,
+              causa: "mazo" as const,
+              puntos: "realizada" as const,
+              oportunidadFlor: null,
+              oportunidadesFlor: obtenerOportunidadesFlorPorAbandono({
+                juego: retiro.estado,
+                flor: florPendiente.estado,
+              }).map((jugador) => ({
+                jugador,
+                estado: "pendiente" as const,
+                duracionMs: 10000 as const,
+              })),
+            }
+          : estado.liquidacionMazo;
+      return {
+        aceptada: true as const,
+        estado: {
+          ...estado,
+          juego: retiro.estado,
+          flor: florPendiente.estado,
+          envido: envidoPendiente.estado,
+          truco: trucoPendiente.estado,
+          adjudicacionTruco,
+          liquidacionMazo,
+          ciclo:
+            retiro.estado.finalizada && retiro.estado.equipoGanador
+              ? {
+                  fase: "liquidacion",
+                  equipoGanador: retiro.estado.equipoGanador,
+                  causa: "mazo",
+                }
+              : estado.ciclo,
+        },
+        eventos: [
+          ...florPendiente.eventos,
+          ...envidoPendiente.eventos,
+          ...trucoPendiente.eventos,
+          ...retiro.eventos,
+        ],
+      };
+    }
     const retirado = estado.juego.mano.mesa.jugadores.find(
       (jugador) => jugador.id === accion.jugador,
     );
@@ -808,18 +1137,16 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
     const envido = liquidacionEnvido.estado;
     if (estado.truco.propuestaPendiente) {
       const contextoTruco = obtenerContextoTruco(estado.juego, envido, flor);
-      const liquidacionTruco = liquidarTrucoPorRetiro(
-        estado.truco,
-        contextoTruco,
-        accion.jugador,
-      );
+      const liquidacionTruco = liquidarTrucoPorRetiro(estado.truco, contextoTruco, accion.jugador);
       if (!liquidacionTruco.aceptada)
         return rechazo(liquidacionTruco.codigo, "No se pudo liquidar el Truco por retiro.");
       if (liquidacionTruco.liquidacion.causa === "propuesta-cancelada-por-retiro") {
         const propuestaCancelada = liquidacionTruco.estado.historialPropuestas.at(-1);
         if (propuestaCancelada?.respuesta !== "cancelada-por-retiro")
           return rechazo("resultado-invalido", "El retiro no tiene respaldo histórico de Truco.");
-        const equipoGanador = estado.juego.mano.equipos.find((equipo) => equipo !== retirado.equipo)!;
+        const equipoGanador = estado.juego.mano.equipos.find(
+          (equipo) => equipo !== retirado.equipo,
+        )!;
         const cierre = finalizarManoPorMazo(estado.juego, equipoGanador, accion.jugador);
         if (!cierre.aceptada)
           return rechazo(cierre.rechazo.codigo, "No se pudo finalizar la mano por mazo.");
@@ -849,7 +1176,12 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
             },
             ciclo: { fase: "victoria-competitiva-determinada", equipoGanador, causa: "mazo" },
           },
-          eventos: [...liquidacionFlor.eventos, ...liquidacionEnvido.eventos, ...liquidacionTruco.eventos, ...cierre.eventos],
+          eventos: [
+            ...liquidacionFlor.eventos,
+            ...liquidacionEnvido.eventos,
+            ...liquidacionTruco.eventos,
+            ...cierre.eventos,
+          ],
         };
       }
       if (liquidacionTruco.liquidacion.causa !== "rechazo-implicito-por-retiro")
@@ -865,7 +1197,10 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
         liquidacionTruco.liquidacion.equipo,
       );
       if (!cierre.aceptada)
-        return rechazo(cierre.rechazo.codigo, "No se pudo finalizar la mano por rechazo implícito.");
+        return rechazo(
+          cierre.rechazo.codigo,
+          "No se pudo finalizar la mano por rechazo implícito.",
+        );
       const adjudicacionTruco: AdjudicacionTrucoCanonica = {
         causa: "rechazo-implicito-por-retiro",
         equipo: liquidacionTruco.liquidacion.equipo,
@@ -889,7 +1224,12 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       return {
         aceptada: true as const,
         estado: integrado,
-        eventos: [...liquidacionFlor.eventos, ...liquidacionEnvido.eventos, ...liquidacionTruco.eventos, ...cierre.eventos],
+        eventos: [
+          ...liquidacionFlor.eventos,
+          ...liquidacionEnvido.eventos,
+          ...liquidacionTruco.eventos,
+          ...cierre.eventos,
+        ],
       };
     }
     const equipoGanador = estado.juego.mano.equipos.find((equipo) => equipo !== retirado.equipo)!;
@@ -909,7 +1249,9 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
           puntos: "pendiente",
           oportunidadFlor: (() => {
             const jugador = obtenerElegibleFlorExcepcional({ ...estado, juego: cierre.estado });
-            return jugador ? { jugador, estado: "pendiente" as const, duracionMs: 10000 as const } : null;
+            return jugador
+              ? { jugador, estado: "pendiente" as const, duracionMs: 10000 as const }
+              : null;
           })(),
         },
         ciclo: { fase: "victoria-competitiva-determinada", equipoGanador, causa: "mazo" },
@@ -934,7 +1276,9 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       ? confirmarFaseFlor(flor.estado, contextoCierre)
       : { aceptada: true as const, estado: flor.estado, eventos: [] as const };
     if (!cierre.aceptada) return rechazo(cierre.codigo, "No se pudo confirmar la fase de Flor.");
-    const respaldoFlor = cierre.estado.anuncios.find((anuncio) => anuncio.jugador === accion.jugador);
+    const respaldoFlor = cierre.estado.anuncios.find(
+      (anuncio) => anuncio.jugador === accion.jugador,
+    );
     const cancelacionEnvido = cancelarEnvidoPorFlor(estado.envido, contexto, respaldoFlor!);
     if (!cancelacionEnvido.aceptada)
       return rechazo(cancelacionEnvido.codigo, "No se pudo cancelar el Envido por Flor.");
@@ -1134,7 +1478,9 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       ? confirmarFaseFlor(resultado.estado, contextoCierre)
       : { aceptada: true as const, estado: resultado.estado, eventos: [] as const };
     if (!cierre.aceptada) return rechazo(cierre.codigo, "No se pudo confirmar la fase de Flor.");
-    const respaldoFlor = cierre.estado.anuncios.find((anuncio) => anuncio.jugador === accion.jugador);
+    const respaldoFlor = cierre.estado.anuncios.find(
+      (anuncio) => anuncio.jugador === accion.jugador,
+    );
     const cancelacionEnvido = cancelarEnvidoPorFlor(estado.envido, contexto, respaldoFlor!);
     if (!cancelacionEnvido.aceptada)
       return rechazo(cancelacionEnvido.codigo, "No se pudo cancelar el Envido por Flor.");
@@ -1198,7 +1544,10 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
   )
     return rechazo("accion-invalida", "Acción coordinada inválida.");
   if (accion.tipo === "cerrar-mano-mazo")
-    return rechazo("cierre-mano-mazo-no-disponible", "El cierre definitivo por mazo no está disponible.");
+    return rechazo(
+      "cierre-mano-mazo-no-disponible",
+      "El cierre definitivo por mazo no está disponible.",
+    );
   if (estado.flor.pendiente)
     return rechazo("flor-pendiente", "La Flor debe resolverse antes de Envido.");
   if (accion.tipo === "iniciar-envido") {
