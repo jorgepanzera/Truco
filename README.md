@@ -4,7 +4,7 @@ Base del monorepositorio para la aplicación web de Truco Uruguayo. Los document
 
 La [arquitectura de la aplicación](docs/ARQUITECTURA.md) describe los módulos, sus dependencias y el estado de implementación.
 
-El proyecto está en preparación y **todavía no es jugable**. Existen una pantalla inicial, un servidor de salud, tipos compartidos mínimos, una frontera provisional del motor y una prueba técnica de persistencia. Las reglas, el motor funcional, la mesa, la IA y las funciones online se desarrollarán en etapas posteriores. El [informe de cierre de la Etapa 1](docs/cierres/CIERRE_ETAPA_1.md) detalla el alcance y sus riesgos.
+El proyecto todavía no es jugable de extremo a extremo. El motor de reglas está implementado; las Fases 6A y 6B incorporan sesiones de invitado, partidas 1v1 en memoria, acciones versionadas y sincronización privada por WebSocket. La mesa web, la persistencia durable, la reconexión y la IA siguen pendientes.
 
 ## Estructura
 
@@ -91,7 +91,7 @@ npm.cmd run build
 
 La pantalla solo comunica que el proyecto está en preparación. Las futuras cartas visuales se incorporarán en la Etapa 3 como imágenes de una baraja española tradicional ilustrada de 40 cartas, con dorso común y licencia de uso adecuada.
 
-## Servidor HTTP mínimo
+## Servidor HTTP y partidas 1v1 (Fase 6A)
 
 Con Node 24 activado en la terminal, desde la raíz:
 
@@ -103,7 +103,17 @@ Abrir `http://127.0.0.1:3000/health` o consultar desde otra terminal con `Invoke
 
 El servidor lee `TRUCO_SERVER_HOST` y `TRUCO_SERVER_PORT` del entorno del proceso. Sus valores predeterminados son `127.0.0.1` y `3000`; el puerto debe ser un entero entre 0 y 65535. El puerto 0 solicita al sistema uno disponible y se muestra al iniciar. Por ejemplo, en PowerShell se puede configurar el puerto de la sesión con `$env:TRUCO_SERVER_PORT = '3001'`. `.env.example` documenta las variables: no se carga automáticamente.
 
-El cierre escucha SIGINT y SIGTERM; en Windows, Ctrl+C genera SIGINT, mientras que SIGTERM no se entrega de forma equivalente a Unix. `/health` no abre ni comprueba la base de datos. No hay servidor de juego ni reglas de juego implementados.
+El cierre escucha SIGINT y SIGTERM; en Windows, Ctrl+C genera SIGINT, mientras que SIGTERM no se entrega de forma equivalente a Unix. `/health` no abre ni comprueba la base de datos.
+
+La API HTTP inicial usa JSON. Crear un invitado con `POST /api/guest-sessions` y `{"nickname":"Ana"}` devuelve un token Bearer impredecible y el apodo. Ese token se envía en `Authorization: Bearer <token>` para crear una partida con `POST /api/matches` (meta 40 por defecto o `{"targetScore":30}`), unirse mediante `POST /api/matches/:matchId/join`, iniciarla con `POST /api/matches/:matchId/start` y leer su snapshot autorizado con `GET /api/matches/:matchId`.
+
+La implementación sólo admite 1v1 y conserva sesiones y partidas en memoria: un reinicio del servidor las elimina. El snapshot contiene únicamente cartas del solicitante, además de información pública de mesa; no expone cartas ajenas, mazo, reparto, tokens ni el estado canónico. No hay interfaz visual, persistencia de partidas, reconexión ni control definitivo de dispositivos.
+
+### WebSocket de partidas (Fase 6B)
+
+El mismo puerto ofrece `ws://127.0.0.1:3000/ws`. Por seguridad, el cliente no coloca el token en la URL: su primer mensaje debe ser `{"type":"auth","token":"..."}`; después envía `{"type":"subscribe","matchId":"..."}` y recibe un `game.snapshot` privado. Las acciones usan `game.action` con `matchId`, `actionId`, `expectedVersion` y una intención como `play-card`, `truco`, `envido` o `go-to-mazo`.
+
+El servidor confirma una transición con `game.confirmed`, rechaza errores o versiones obsoletas con `game.rejected` y entrega snapshots privados actualizados a los participantes suscritos. El transporte es provisional: no hay persistencia, recuperación tras reinicio, relojes ni control definitivo de un único dispositivo.
 
 ## Persistencia local con Prisma y SQLite
 

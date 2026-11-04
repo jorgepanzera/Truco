@@ -1,107 +1,254 @@
 # Arquitectura de Truco Uruguayo
 
-Este documento describe la organización del código y el estado actual de la aplicación. Para las reglas y los requisitos, consultar el [Reglamento v1.6](REGLAMENTO_TRUCO_URUGUAYO_v1.6.md) y la [Especificación Funcional v1.4](ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md); el Reglamento prevalece para las reglas de juego. Las versiones anteriores se conservan como antecedentes. El [README](../README.md) contiene instrucciones de instalación y uso.
+## 1. Propósito y alcance
 
-### Política de versionado documental
+Este documento describe la arquitectura técnica real del monorepo al cierre de la Fase 6B. Es una referencia para los incrementos posteriores; no sustituye las reglas de juego ni define requisitos de producto.
 
-Cada nueva versión del Reglamento debe contener todas las reglas vigentes; cada nueva versión de la Especificación Funcional debe contener todas las definiciones funcionales vigentes. Las modificaciones se integran en sus secciones temáticas: una versión nueva no puede consistir únicamente en anexos o diferencias respecto de versiones anteriores. Los documentos anteriores permanecen disponibles como antecedentes históricos y ninguna consolidación puede eliminar información normativa vigente sin justificación explícita. Los cambios normativos requieren decisiones aprobadas; una consolidación editorial no autoriza crear reglas.
+El [Reglamento v1.6](REGLAMENTO_TRUCO_URUGUAYO_v1.6.md) prevalece para reglas reglamentarias y la [Especificación Funcional v1.4](ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md) para comportamiento de producto y alcance. El [README](../README.md) contiene la instalación y los comandos de uso.
 
-Solo el Reglamento v1.6 y la Especificación Funcional v1.4 son versiones normativas vigentes. Las versiones históricas y las evidencias de consolidación se conservan exclusivamente para trazabilidad; los cierres técnicos se guardan en `docs/cierres/`. Al aprobar una versión nueva, la anterior pasa a `docs/historico/` y se actualizan las referencias vigentes. Codex no debe usar una versión histórica para resolver reglas actuales cuando exista una versión vigente.
+### Política documental
 
-## Estado actual
+Las únicas fuentes normativas vigentes son el Reglamento v1.6 y la Especificación Funcional v1.4. Sus versiones históricas se conservan para trazabilidad; los cierres técnicos viven en `docs/cierres/`. Una consolidación editorial no crea reglas ni modifica requisitos aprobados.
 
-El proyecto es un monorepositorio TypeScript con cuatro npm workspaces: una aplicación web, un servidor y dos paquetes compartidos. Todavía no es jugable. La web muestra una pantalla inicial; el servidor ofrece un endpoint de salud; hay infraestructura provisional de persistencia y lógica de cartas y preparación de manos. La interfaz de mesa, el flujo completo de partidas, la IA y las funciones online quedan para etapas posteriores.
+## 2. Principios y decisiones arquitectónicas
 
-## Organización y dependencias
+- El motor es TypeScript puro, determinista y sin dependencias de red, interfaz, base de datos ni reloj real.
+- El azar y el tiempo entran como datos explícitos: el reparto recibe un mazo y las elecciones de barajado; los vencimientos y desconexiones son acciones temporales externas.
+- El estado canónico contiene toda la información necesaria para verificar reglas. No debe enviarse directamente a clientes porque incluye cartas privadas.
+- `packages/shared` no depende de otros workspaces. `packages/game-engine` solo depende de `@truco/shared`; esta regla se verifica estáticamente.
+- El servidor es la autoridad de la creación e inicialización online: autentica al invitado, asigna asientos, genera el reparto y proyecta el estado antes de comunicarlo. El cliente no decide resultados.
+- SQLite y Prisma son la decisión vigente de persistencia para v1.
+
+## 3. Estructura del monorepo
 
 ```text
 apps/
-  web/             Interfaz React y Vite
-  server/          Servidor HTTP y persistencia
+  web/             React + Vite; pantalla de presentación
+  server/          HTTP, configuración y base SQLite de infraestructura
 packages/
-  shared/          Tipos compartidos
-  game-engine/     Lógica y futura transición del juego
-docs/              Reglamento, especificaciones y documentación
-scripts/           Controles de arquitectura y diagnóstico
+  shared/          Tipos mínimos compartidos
+  game-engine/     Reglas puras de cartas, mano, partida y tiempo
+docs/              Normativa y documentación técnica
+scripts/           Verificaciones de arquitectura y diagnóstico Prisma
 .github/workflows/ Integración continua
 ```
 
-Las dependencias están orientadas hacia los paquetes compartidos:
+Las dependencias actuales son:
 
 ```text
-web ────────┐
-            ├──> game-engine ──> shared
-server ─────┘          │
-   └───────────────────┴───────> shared
-web ───────────────────────────> shared
+apps/web    ─┬─> @truco/game-engine ─> @truco/shared
+             └─> @truco/shared
+apps/server ─┬─> @truco/game-engine ─> @truco/shared
+             ├─> @truco/shared
+             └─> Prisma + adaptador SQLite
 ```
 
-`shared` no depende de otros módulos del proyecto. `game-engine` puede depender de `shared`, pero no de las aplicaciones, la interfaz, la red, la persistencia ni Node. Las aplicaciones declaran ambos paquetes como dependencias. Esto define límites de código; no implica que ya exista una partida conectada entre la web y el servidor.
+El control `scripts/check-architecture.mjs` impide que `shared` importe al motor y que el motor importe aplicaciones, Node u otras dependencias. También restringe los manifiestos y las referencias TypeScript de ambos paquetes.
 
-## Web: `apps/web`
+## 4. Tecnologías y herramientas
 
-La interfaz usa React y Vite. [index.html](../apps/web/index.html) proporciona el elemento raíz; [main.tsx](../apps/web/src/main.tsx) monta React y carga los estilos; y [App.tsx](../apps/web/src/App.tsx) renderiza la pantalla de presentación. Los textos están en [textos.ts](../apps/web/src/textos.ts) y los estilos en [styles.css](../apps/web/src/styles.css). [App.test.tsx](../apps/web/tests/App.test.tsx) comprueba el renderizado básico.
+- Node.js 24 (`>=24 <25`) y npm 11 (`>=11 <12`), definidos en el `package.json` raíz.
+- TypeScript estricto, ESM y referencias entre proyectos.
+- React 19 y Vite 7 en la web.
+- HTTP nativo de Node en el servidor actual.
+- Prisma 7, `@prisma/adapter-better-sqlite3` y SQLite en persistencia.
+- ESLint, Prettier, `node:test`, Vitest y GitHub Actions.
 
-Actualmente no hay una mesa de juego ni comunicación de partida con el servidor. `npm run dev:web`, ejecutado desde la raíz, compila primero los paquetes compartidos y luego inicia Vite. Si se cambian esos paquetes durante el desarrollo, hay que volver a ejecutar el comando para actualizar sus builds.
+La CI de [ci.yml](../.github/workflows/ci.yml) usa Node 24.20.0, ejecuta `npm ci` y luego `npm run check` en `push` y `pull_request`.
 
-## Servidor: `apps/server`
+## 5. Arquitectura del Game Engine
 
-El backend utiliza el servidor HTTP nativo de Node:
+`packages/game-engine` exporta su API desde [index.ts](../packages/game-engine/src/index.ts). Los módulos no mantienen efectos ni temporizadores internos; reciben estado y entradas, y devuelven estado nuevo y eventos o un rechazo estructurado.
 
-- [main.ts](../apps/server/src/main.ts) lee la configuración, inicia el servidor y gestiona su cierre.
-- [config.ts](../apps/server/src/config.ts) valida host y puerto; sus valores predeterminados son `127.0.0.1` y `3000`.
-- [server.ts](../apps/server/src/server.ts) crea el servidor y responde a `GET /health` con un estado JSON. Otras rutas reciben 404 y otros métodos sobre `/health`, 405.
-- [server.test.ts](../apps/server/src/server.test.ts) prueba el comportamiento HTTP y la configuración.
+### Cartas, mesa y reparto
 
-`/health` verifica la respuesta del servidor, pero no consulta la base de datos. Todavía no hay endpoints ni transporte para partidas.
+- [cartas.ts](../packages/game-engine/src/cartas.ts) define el mazo español de 40, validación e identidad de cartas, muestra, piezas, alcahuete, jerarquía y valor individual.
+- [mano.ts](../packages/game-engine/src/mano.ts) define `Mesa`, `JugadorMesa`, `ManoPreparada` y el recorrido antihorario. Valida 1v1 y 2v2, posiciones, equipos alternados, repartidor, mano original, reparto, muestra y mazo restante.
+- `seleccionarPrimerRepartidor` y `barajarMazo` reciben elecciones externas verificables. El motor no genera aleatoriedad por sí mismo.
 
-### Persistencia
+Una mesa usa identificadores de jugador, equipo y posición entera. El orden del arreglo no decide los asientos: las posiciones crecientes representan el sentido antihorario. En 2v2 los compañeros ocupan posiciones opuestas.
 
-La infraestructura usa Prisma y SQLite y reside en el servidor:
+### Cartas, bazas y retiros
 
-- [schema.prisma](../apps/server/prisma/schema.prisma) define el proveedor SQLite, el cliente generado y `InfrastructureProbe`, una tabla técnica de prueba que no representa una entidad del juego.
-- [migrations](../apps/server/prisma/migrations) contiene las migraciones del esquema; [prisma7.config.ts](../apps/server/prisma7.config.ts) configura sus rutas y la URL de la base.
-- [database-url.ts](../apps/server/src/database-url.ts) resuelve la URL local y [database.ts](../apps/server/src/database.ts) crea y cierra el cliente Prisma. El servidor HTTP aún no utiliza ese cliente.
-- [persistence.test.ts](../apps/server/src/persistence.test.ts) prueba las migraciones y la lectura y escritura en una base temporal independiente de la base de desarrollo.
+[juego-cartas.ts](../packages/game-engine/src/juego-cartas.ts) mantiene `EstadoJuegoCartas`: cartas disponibles, retirados, baza actual, bazas resueltas, turno, ganador y causa de finalización. Implementa:
 
-Sin `DATABASE_URL`, la base de desarrollo se ubica en `apps/server/prisma/dev.db`. El cliente Prisma se genera en `apps/server/src/generated/prisma/` y no se versiona. Las cuentas, salas, partidas y estadísticas aún no tienen modelos de persistencia.
+- jugadas válidas, turnos filtrados y comparación por equipo;
+- las quince resoluciones de bazas, pardas y cierre sin tercera baza innecesaria;
+- autor histórico de la carta ganadora y salida posterior, incluso con retirados;
+- retiro individual, preservación de cartas ya jugadas y exclusión de cartas privadas restantes;
+- finalización por rechazo de Truco y por mazo.
 
-## Tipos compartidos: `packages/shared`
+Las consultas `estaActivo`, `jugadoresActivos`, `jugadoresActivosDelEquipo` y `siguienteJugadorActivo` derivan la participación desde el estado canónico de cartas. No existen listas paralelas de retirados en otros dominios.
 
-[src/index.ts](../packages/shared/src/index.ts) define los tipos básicos comunes, entre ellos `Palo`, `ValorNominal`, `Carta`, `Modalidad` y `MetaPuntos`. Su propósito es dar un vocabulario común al motor y a las aplicaciones sin introducir dependencias hacia ellas.
+### Envido, Flor y Truco
 
-## Motor: `packages/game-engine`
+- [envido.ts](../packages/game-engine/src/envido.ts) calcula tantos, cadenas de Envido/Real/Falta, comparaciones por equipo, rechazos, Falta Envido con puntaje inicial y liquidaciones por retiro. Un Envido aceptado se compara y adjudica atómicamente.
+- [flor.ts](../packages/game-engine/src/flor.ts) calcula Flor, conserva derechos individuales, modela anuncios, Contra Flor, Contra Flor al Resto, adjudicaciones y resultado terminal semántico.
+- [truco.ts](../packages/game-engine/src/truco.ts) modela Truco, Retruco y Vale Cuatro, sus propuestas, aceptaciones, rechazos, historial y consecuencias de retiro.
 
-[cartas.ts](../packages/game-engine/src/cartas.ts) contiene lógica de cartas: construcción y validación del mazo de 40 cartas, detección de duplicados, muestra, piezas y alcahuete, jerarquía, comparación y valor individual. [cartas.test.mjs](../packages/game-engine/tests/cartas.test.mjs) cubre esa lógica. El valor individual todavía no constituye un cálculo completo de envido o flor.
+[coordinador.ts](../packages/game-engine/src/coordinador.ts) compone estos dominios en `EstadoManoCoordinada` y expone `ejecutarAccionCoordinada`. Conserva el contexto de inicio, las adjudicaciones canónicas de Truco, el ciclo de la mano y la liquidación por mazo. Aplica prioridad Flor → Envido → Truco, suspensión y reanudación de desafíos, `Con Flor Quiero`, adjudicación única y Contra Flor al Resto.
 
-[mano.ts](../packages/game-engine/src/mano.ts) define `Mesa` y `JugadorMesa`: cada jugador tiene ID, ID de equipo y posición entera única desde cero, creciente en sentido antihorario. `validarMesa` exige dos o cuatro jugadores según modalidad, dos equipos completos y alternados; en cuatro posiciones esto enfrenta a los compañeros. El orden de entrada del arreglo no determina el asiento. Las funciones de recorrido identifican vecinos, mano original, su equipo, orden de reparto y siguiente repartidor.
+En 2v2 el coordinador implementa la continuidad del compañero, retiros secuenciales, liquidaciones Flor → Envido → Truco, victoria competitiva frente a cierre definitivo y oportunidades individuales de Flor posteriores al abandono completo. Las oportunidades se ordenan desde el mano original y se consumen una a una.
 
-`seleccionarPrimerRepartidor` recibe un índice externo entero uniforme entre cero y el número de jugadores menos uno. `barajarMazo` recibe un mazo completo y exactamente 39 índices externos: para Fisher–Yates, cada elección corresponde respectivamente a los límites inclusivos 39 hasta 1 y debe ser uniforme incluso condicionada a las elecciones anteriores. El motor valida los límites, pero la uniformidad y la generación segura corresponden a la capa externa. No genera azar interno.
+### Partido, marcador y avance de mano
 
-`prepararMano` valida mesa, repartidor y mazo completo; entrega tres vueltas desde el mano original, toma la carta siguiente como muestra y conserva el remanente. `ManoPreparada` incluye la mesa ordenada, equipos, identidades, orden de recorrido, entregas cronológicas, manos por jugador, muestra, remanente y salida de la primera baza. Las cartas de entrada se copian; las entregas describen las mismas cartas que las manos y no son cartas adicionales. La muestra se toma después de todas las entregas. El remanente es información del mazo, sin operación de reparto adicional durante la mano. [mano.test.mjs](../packages/game-engine/tests/mano.test.mjs) cubre estas operaciones.
+[partida.ts](../packages/game-engine/src/partida.ts) agrega manos en `EstadoPartida`. Sus operaciones públicas son:
 
-[index.ts](../packages/game-engine/src/index.ts) exporta estas operaciones y la lógica de cartas, y define el contrato genérico provisional `Transicion`: recibe estado, acción y entradas externas, y produce un estado nuevo con eventos ordenados o un rechazo. La transición concreta de cartas lo reutiliza sin entradas externas. La intención es que sea pura y reproducible, con azar y tiempo como entradas explícitas; la gestión de efectos, relojes y acceso a información corresponde a capas externas. El contrato de tipos por sí solo no garantiza pureza ni inmutabilidad profunda.
+- `crearEstadoPartida` para iniciar desde una mano coordinada;
+- `ejecutarAccionPartida` para delegar acciones de la mano activa;
+- `contabilizarManoCerrada` para incorporar una mano definitivamente cerrada una sola vez;
+- `siguienteMano` para rotar repartidor y preparar el siguiente reparto;
+- `esEstadoPartidaValido` y las identidades canónicas de mano para comprobar el historial.
 
-`juego-cartas.ts` representa el juego de cartas de una mano preparada con cartas disponibles, jugadas con autor, baza actual, bazas resueltas y turno. `iniciarJuegoCartas` valida la estructura de la mano; `ejecutarCarta` es una transición pura con eventos o rechazo estructurado. La resolución reutiliza la jerarquía existente, compara la máxima carta por equipo, aplica la tabla de bazas del Reglamento §5.2 y la salida de §5.3. El retiro terminal 1v1 está implementado; el retiro individual 2v2 y sus efectos sobre bazas activas todavía no lo están.
+El marcador se conserva por equipos, admite metas 30 o 40, Falta Envido usa el marcador al inicio de la mano, y el estado contempla empate de desempate y victoria directa por Contra Flor al Resto cuando corresponde. Tanto 1v1 como 2v2 atraviesan el ciclo completo de mano, contabilización y rotación.
 
-`envido.ts` calcula tantos y detecta Flor sin otorgarle valor ficticio. Modela la cadena de Envido, Real Envido y Falta Envido, sus aumentos, aceptación o rechazo y adjudicaciones. `flor.ts` modela derechos, anuncios, desafíos, adjudicación diferida y la victoria semántica de Contra Flor al Resto. Ninguno duplica cartas, reparto ni turnos: ambos reciben contextos de solo lectura derivados del estado canónico de cartas.
+### Tiempo y desconexiones
 
-`coordinador.ts` compone cartas, Envido, Flor y Truco en `EstadoManoCoordinada`, que además conserva el contexto inmutable de inicio de mano y el resultado terminal excepcional de Contra Flor al Resto. Flor tiene prioridad: un anuncio válido cancela Envido pendiente sin puntos; Flor pendiente bloquea cartas y acciones de Envido. Tras Flores de ambos equipos, la siguiente carta válida consume la oportunidad de desafío; los derechos restantes pueden agotarse después y el cierre diferido se confirma desde anuncio, carta o respuesta según corresponda. Los eventos semánticos se emiten en el orden de la transición.
+[temporal.ts](../packages/game-engine/src/temporal.ts) envuelve una mano coordinada en `EstadoTemporalMano`. No usa `Date.now`, `setTimeout` ni `setInterval`; el servidor u otra capa externa agenda los plazos y vuelve a ingresar eventos.
 
-La validación nivel B de Flor comprueba coherencia histórica deducible de anuncios, derechos, desafíos, oportunidad, cierre, adjudicaciones y terminal. El coordinador comprueba además la correspondencia entre Flor y `resultadoPartida`, la pérdida de derecho frente a la primera carta y la prioridad con Envido. `con-flor-quiero` encapsula la excepción de turno de su primer anuncio y la aceptación de Truco en una única transición; el estado de Flor no guarda la causa de ese anuncio. Por eso la legalidad de dicha excepción se garantiza al ejecutar la transición y no puede reconstruirse retrospectivamente sin procedencia redundante. No hay una reconstrucción completa de cronología porque el estado no conserva causa individual de pérdida ni instantáneas históricas de turno. La lógica de Truco/Retruco/Vale Cuatro y su coordinación con Flor y Envido se abordaron hasta el bloque 2.6; `flor-y-truco` no se incorporará al contrato del motor. Timeout, marcador acumulado, persistencia de partidas y coordinación completa de partido permanecen fuera del alcance documentado aquí, pendientes de verificación en el repositorio.
+`obtenerTemporizadorAccionPendiente` deriva una única acción de diez segundos: turno de carta, respuesta de Flor, Envido o Truco, u oportunidad de Flor posterior al mazo. `ejecutarAccionTemporal` acepta acciones normales, vencimientos, desconexiones, reconexiones y vencimientos de desconexión. Los identificadores de versión y pausa rechazan vencimientos obsoletos o duplicados.
 
-### Retiro al mazo: arquitectura prevista para 2v2
+Al vencer un turno se anuncia Flor válida antes de jugar la carta de menor fuerza real; los empates se resuelven por oros, copas, espadas y bastos. Las respuestas vencidas ejecutan `No quiero`. Las pausas de desconexión son individuales de 30 segundos; al volver un jugador se reinicia el reloj ordinario de diez segundos. Vencimientos simultáneos se procesan secuencialmente y no alteran la primera adjudicación competitiva ya determinada.
 
-La comprobación de una Flor anunciada debe derivarse autoritativamente de las cartas canónicas y la muestra, sin exponer información privada. La coordinación debe conservar las Flores legítimas ya anunciadas sin desafío, distinguir la cancelación de la propuesta por retiro del último proponente del No quiero implícito del respondedor y liquidar exactamente una vez las Flores ordinarias aún procedentes.
+### Contratos públicos y límites
 
-El estado canónico de cartas deberá conservar los jugadores retirados; de él se derivarán participantes activos, turno filtrado, cartas exigibles por baza y salida válida. Cuando empaten cartas máximas de compañeros, el cálculo previsto determinará primero el autor histórico por cercanía antihoraria al mano original, sin descartar cartas de retirados; solo después consultará el estado canónico de retirados. Si ese autor histórico está retirado, recorrerá circularmente los asientos en sentido antihorario hasta el primer activo. Las cartas ya jugadas se preservarán como historial de la baza; las no jugadas del retirado seguirán privadas e inutilizables. Flor y Envido no tendrán listas independientes de retirados: sus contextos de solo lectura distinguirán participación activa de elegibilidad individual para declarar o comparar. Tras victoria competitiva, los derechos de Flor conservados se derivarán de ese mismo estado canónico, se ordenarán por los asientos antihorarios desde el mano original y se procesarán mediante oportunidades individuales secuenciales. El reloj será externo e ingresará mediante acciones o eventos explícitos; su vencimiento reutilizará la misma semántica de Flor que una declaración manual válida. El coordinador conservará la prioridad de liquidación Flor → Envido → Truco, las adjudicaciones exactamente una vez, la victoria competitiva, la liquidación pendiente y el cierre definitivo. Si se retira el último proponente habilitado de una Contra Flor o Contra Flor al Resto pendiente, cancelará la propuesta sin adjudicación de rechazo y cerrará la mano por el último nivel de Truco aceptado; el No quiero implícito queda reservado al agotamiento del equipo respondedor. La finalización inmediata de partido por Contra Flor al Resto seguirá siendo una responsabilidad semántica coordinada. Esta arquitectura es **prevista**: no describe funcionalidad 2v2 actualmente implementada.
+El motor exporta tipos, validadores, transiciones y eventos de todos sus módulos. `ResultadoTransicion` y `Transicion` son contratos genéricos reutilizados por dominios especializados. Los archivos `*.typecheck.ts` son comprobaciones de contrato de compilación, no funcionalidad de juego.
 
-## Configuración y calidad
+El estado canónico se conserva exclusivamente dentro del servidor. La proyección privada por participante es un contrato de lectura deliberadamente construido y no una serialización del motor; HTTP y WebSocket entregan la misma forma de `SnapshotPartida`. En una partida iniciada el snapshot publica `marcador`, `cartasPropias`, `cartasJugadas`, `turno`, `repartidor`, `muestra` y `desafiosPendientes`, además de identidad, versión, meta y participantes. Nunca publica cartas ajenas, mazo, entregas, IDs internos ni el estado canónico.
 
-- [package.json](../package.json) declara los workspaces y los comandos comunes. [package-lock.json](../package-lock.json) fija el árbol de dependencias.
-- [tsconfig.base.json](../tsconfig.base.json) y los `tsconfig.json` de cada workspace configuran TypeScript estricto, módulos ESM y referencias entre proyectos.
-- [check-architecture.mjs](../scripts/check-architecture.mjs) revisa manifiestos, referencias TypeScript e imports de `shared` y `game-engine` para controlar sus dependencias. Es un control estático, no una demostración de ausencia de efectos secundarios.
-- [eslint.config.mjs](../eslint.config.mjs) y [.prettierrc.json](../.prettierrc.json) configuran lint y formato.
-- [ci.yml](../.github/workflows/ci.yml) configura GitHub Actions para eventos `push` y `pull_request`: instala dependencias con `npm ci` y ejecuta `npm run check`.
+6B añade `auth.ok`, `game.snapshot`, `game.confirmed`, `game.rejected` y `error`. `game.confirmed` solo identifica la acción y su versión; `game.rejected` añade un código y la versión vigente. Después de una acción aceptada se emite un snapshot privado actualizado a cada suscriptor de la partida. No hay eventos públicos semánticos de adjudicación ni de ciclo de mano. Por ello, el marcador acumulado, las cartas, el turno y los desafíos pendientes están disponibles; los resultados de Envido o Flor solo pueden inferirse parcialmente de un cambio en el marcador. Tampoco se expone el nivel de la apuesta de Truco ya aceptada, el ganador de una mano, su cierre, ni un resultado terminal explícito del partido.
 
-Desde la raíz, `npm run check` comprueba formato, lint, arquitectura y tipos; ejecuta pruebas del motor, web, servidor y base de datos; y compila. El [README](../README.md) detalla los comandos individuales, las variables de entorno y las particularidades de Windows.
+## 6. Modelo de estado y flujo de juego
+
+El flujo reglamentario vigente es:
+
+```text
+Mesa + mazo externo
+  -> ManoPreparada
+  -> EstadoJuegoCartas + EstadoManoCoordinada
+  -> EstadoPartida
+  -> acciones, bazas, desafíos, retiros y/o vencimientos
+  -> cierre definitivo de mano
+  -> contabilizarManoCerrada
+  -> siguienteMano o partida-finalizada
+```
+
+El coordinador valida coherencia cruzada entre cartas, cantos, adjudicaciones y ciclo de mano antes de aceptar una transición. Las transiciones rechazadas no cambian el estado. Las adjudicaciones de Flor, Envido y Truco son independientes y se registran una sola vez.
+
+En 6B el servidor ya asocia una acción autenticada y versionada con `EstadoPartida`: la traduce a una acción del motor, aplica la transición y, cuando corresponde, contabiliza el cierre definitivo y prepara la mano siguiente en la misma operación en memoria. Luego confirma o rechaza el comando y sincroniza snapshots privados. El avance interno no se materializa como un evento de adjudicación, cierre o inicio de mano.
+
+`EstadoTemporalMano` se usa alrededor de una mano coordinada, no alrededor de `EstadoPartida`, y todavía no está conectado al servidor 6B. Persistir versiones, acciones y snapshots, y agendar relojes, siguen siendo responsabilidades posteriores.
+
+## 7. Arquitectura del servidor actual
+
+`apps/server` contiene la primera frontera autoritativa de partidas online. Su almacenamiento es temporal en memoria y no sustituye la persistencia de 6D.
+
+- [main.ts](../apps/server/src/main.ts) lee la configuración, abre el servidor y atiende `SIGINT`/`SIGTERM`.
+- [config.ts](../apps/server/src/config.ts) valida `TRUCO_SERVER_HOST` y `TRUCO_SERVER_PORT`; los valores predeterminados son `127.0.0.1:3000`.
+- [server.ts](../apps/server/src/server.ts) mantiene HTTP y conecta el upgrade `/ws` al mismo servidor y puerto.
+- [websocket.ts](../apps/server/src/websocket.ts) autentica el primer mensaje, administra suscripciones privadas y distribuye confirmaciones y snapshots.
+- [matches.ts](../apps/server/src/matches.ts) conserva el estado canónico en memoria, versiones, idempotencia provisional y avance de manos mediante el motor.
+- [game-actions.ts](../apps/server/src/game-actions.ts) traduce intenciones de red a acciones del motor sin aceptar jugador ni estado enviados por el cliente.
+- [server.test.ts](../apps/server/src/server.test.ts) verifica configuración, salud, sesiones, asientos, inicio, privacidad y concurrencia de incorporación.
+
+Una sesión provisional de invitado se crea con `POST /api/guest-sessions`; recibe un token criptográficamente aleatorio de 256 bits y un apodo validado (3–20 caracteres, letras incluidas tildes/ñ, números, espacios, guion y guion bajo). El token se entrega únicamente al crear la sesión y autentica las rutas de partida mediante `Authorization: Bearer <token>`.
+
+La API HTTP de 6A permanece vigente. 6B añade `/ws`: el cliente envía primero `{"type":"auth","token":"…"}`, luego `{"type":"subscribe","matchId":"…"}` y recibe `auth.ok` y `game.snapshot`. Una acción usa `game.action` con `matchId`, `actionId`, `expectedVersion` y una intención (por ejemplo `play-card`, `truco`, `envido` o `go-to-mazo`). No se aceptan jugador ni estado canónico desde la red.
+
+Las acciones se validan y ejecutan mediante `ejecutarAccionPartida`; una aceptación incrementa la versión y emite `game.confirmed` al emisor más snapshots privados a los suscriptores. Rechazos y reintentos usan `game.rejected`; la misma pareja jugador/actionId devuelve el resultado previo si el contenido es idéntico y se rechaza si difiere. El registro está acotado en memoria. Tras un cierre definitivo, el servidor contabiliza la mano y prepara la siguiente con aleatoriedad segura, salvo al finalizar el partido.
+
+Para iniciar, el servidor construye una `Mesa` 1v1 y reutiliza `crearMazo`, `barajarMazo`, `seleccionarPrimerRepartidor`, `prepararMano`, `iniciarJuegoCartas`, `crearEstadoManoCoordinada` y `crearEstadoPartida`. La aleatoriedad de producción proviene de `node:crypto`; la fuente de enteros se inyecta en pruebas. No hay una segunda implementación del reparto ni de las reglas.
+
+## 8. Persistencia y acceso a datos
+
+La configuración de Prisma está en `apps/server/prisma` y [prisma7.config.ts](../apps/server/prisma7.config.ts). El esquema usa SQLite y el cliente generado se ubica en `apps/server/src/generated/prisma/`.
+
+El único modelo actual es `InfrastructureProbe`: demuestra migración y acceso a SQLite, pero no representa una entidad de juego. [database.ts](../apps/server/src/database.ts) construye y cierra el cliente Prisma mediante el adaptador Better SQLite3. [database-url.ts](../apps/server/src/database-url.ts) resuelve una URL `file:` local; sin `DATABASE_URL`, la base de desarrollo es `apps/server/prisma/dev.db`.
+
+La migración `20261017000000_infrastructure_probe` y [persistence.test.ts](../apps/server/src/persistence.test.ts) prueban una migración y lectura/escritura en una base temporal aislada. No hay modelos ni persistencia de usuarios, salas, partidas, acciones, snapshots, estadísticas o transacciones de juego.
+
+## 9. Arquitectura del cliente web actual
+
+`apps/web` usa React 19 y Vite 7.
+
+- [main.tsx](../apps/web/src/main.tsx) monta React en modo estricto.
+- [App.tsx](../apps/web/src/App.tsx), [textos.ts](../apps/web/src/textos.ts) y [styles.css](../apps/web/src/styles.css) forman una pantalla de presentación estática.
+- [App.test.tsx](../apps/web/tests/App.test.tsx) verifica su renderizado básico.
+
+La web declara dependencias sobre el motor y `shared`, pero no tiene mesa, estado de partida, conexión HTTP o WebSocket, acciones de juego, reloj ni manejo de reconexión. No existe todavía una interfaz jugable offline u online.
+
+## 10. Contratos compartidos y comunicación
+
+`packages/shared` exporta `Palo`, `ValorNominal`, `Carta`, `Modalidad`, `MetaPuntos` y la constante `sharedPackage`. Constituye un vocabulario sin lógica de transporte ni reglas de juego.
+
+El contrato HTTP de 6A usa JSON y devuelve `400`, `401`, `403`, `404`, `405` o `409` según corresponda, sin trazas ni datos internos. `POST /api/guest-sessions` recibe, por ejemplo, `{"nickname":"Ana"}` y devuelve `{"token":"…","apodo":"Ana"}`. Una creación autenticada devuelve `matchId`, asiento y snapshot. La credencial no se incluye en snapshots ni en respuestas de terceros.
+
+El contrato WebSocket de 6B usa el mismo puerto en `/ws`. Tras `auth` y `subscribe`, entrega `auth.ok` y `game.snapshot`. `game.action` exige `matchId`, `actionId`, `expectedVersion` y una intención válida; responde `game.confirmed` con acción y versión, o `game.rejected` con acción, código y versión. Una aceptación también distribuye un `game.snapshot` actualizado a los participantes suscritos. Los errores de protocolo y autenticación usan `error` con código y mensaje.
+
+Un snapshot de espera contiene configuración, versión, asiento propio y apodos/asientos ocupados. Tras el inicio añade marcador, repartidor, muestra, cartas propias, cartas ya jugadas, turno y desafíos pendientes. El servidor crea esa estructura desde campos permitidos: nunca serializa `EstadoPartida` para luego ocultar propiedades. El mazo, entregas, manos ajenas, IDs internos, semillas y estado canónico no forman parte del contrato.
+
+## 11. Seguridad, autoridad y privacidad
+
+### Estado actual
+
+- El motor valida reglas, participantes, cartas, turnos, adjudicaciones y estados manipulados antes de transicionar.
+- El motor es puro y no confía en una fuente de azar o tiempo interna.
+- Las sesiones de invitado y los IDs de partida se generan con `node:crypto`; todas las operaciones de partida autentican y autorizan al participante.
+- El estado canónico mantiene cartas privadas en memoria. Los snapshots se construyen explícitamente para el solicitante y solo incluyen sus cartas; participantes ajenos no pueden consultarlos.
+
+### Arquitectura objetivo
+
+En partidas online, Fase 6 debe colocar al servidor como autoridad: generar azar seguro, recibir acciones autenticadas, aplicar el motor, persistir cada transición de forma atómica y emitir proyecciones autorizadas. Las proyecciones deberán incluir solo las cartas del destinatario, la muestra y eventos públicos; las señas solo podrán llegar al compañero.
+
+También son futuros: control definitivo de dispositivo, sesiones persistentes, idempotencia durable/transaccional, recuperación luego de reinicios, relojes y anulación técnica por fallas irrecuperables. La versión ya se exige en comandos WebSocket, pero sólo existe mientras el proceso continúa activo.
+
+## 12. Pruebas y controles de calidad
+
+Las pruebas del motor están organizadas por dominio (`cartas`, `mano`, `juego-cartas`, `envido`, `flor`, `truco`, `coordinador`, `partida`, `temporal` e `integracion`). Cubren tanto unidades reglamentarias como recorridos públicos 1v1 y 2v2, puntuación, cierres, retiros, Flor posterior al abandono, temporizadores y desconexiones.
+
+Comandos principales desde la raíz:
+
+- `npm run test:engine`, `npm run test:web`, `npm run test:server` y `npm run test:db` ejecutan las suites por componente.
+- `npm run format:check`, `npm run lint`, `npm run check:architecture` y `npm run typecheck` ejecutan controles estáticos.
+- `npm run build` genera Prisma, compila TypeScript y construye la web.
+- `npm run check` encadena formato, lint, arquitectura, tipos, todas las pruebas y build.
+
+Al cierre técnico de Fase 5, el motor tenía 214 pruebas aprobadas. El resultado de cualquier ejecución posterior debe consultarse en la salida real del comando, no inferirse de ese dato histórico.
+
+## 13. Estado de implementación por componente
+
+| Componente | Estado | Alcance actual |
+|---|---|---|
+| Game Engine | Implementado y verificado | Reglas completas de mano y partido 1v1/2v2, puntuación, retiros y tiempo lógico. |
+| Tipos compartidos | Implementado | Vocabulario mínimo de cartas, modalidades y metas. |
+| Servidor HTTP y WebSocket | Implementado parcialmente | Salud, sesiones y partidas 1v1 en memoria; comandos versionados, idempotencia provisional y snapshots privados por WebSocket. Sin persistencia, relojes, reconexión ni contrato de resultados semánticos. |
+| Persistencia | Implementado parcialmente | Prisma/SQLite y prueba de infraestructura; sin datos de dominio. |
+| Cliente web | Implementado parcialmente | Presentación React; sin mesa ni flujo de juego. |
+| Seguridad online | Implementado parcialmente | Credenciales de invitado, autorización por partida, filtrado de snapshots e idempotencia acotada en memoria; sin sesiones durables, idempotencia transaccional ni recuperación. |
+| Señas 2v2 | Pendiente | Catálogo, privacidad y entrega al compañero. |
+
+## 14. Estado de la Fase 6 al cierre de 6B
+
+La Fase 6 reutiliza el Game Engine como núcleo reglamentario y agrega infraestructura alrededor de él. Al cierre de 6B, los incrementos tienen el siguiente estado:
+
+| Incremento | Responsabilidad arquitectónica |
+|---|---|
+| 6A | Implementado: servidor autoritativo inicial y API HTTP de partidas 1v1. |
+| 6B | Implementado: autenticación inicial, suscripción privada, comandos 1v1 versionados, confirmación/rechazo y snapshots actualizados. No incluye eventos de resultado, persistencia, relojes ni reconexión. |
+| 6C | Cliente mínimo para la primera partida jugable 1v1. |
+| 6D | Persistencia transaccional, registro de acciones e idempotencia. |
+| 6E | Agenda real de relojes, desconexiones y reconexión. |
+| 6F | Multijugador 2v2, proyecciones por destinatario y señas privadas. |
+| 6G | Integración, endurecimiento y cierre operativo. |
+
+HTTP crea, une, inicia y consulta recursos; WebSocket recibe acciones y sincroniza el estado vivo; el servidor valida contra el motor y la web futura presentará una proyección privada sin reproducir reglas. La persistencia deberá guardar estado canónico y metadatos de versión suficientes para recuperación, sin hacer visibles cartas ajenas.
+
+## 15. Restricciones y decisiones pendientes
+
+- El Reglamento y la Especificación no autorizan resolver silenciosamente vacíos funcionales.
+- La continuidad de futuras manos si un participante abandona definitivamente una mesa es una decisión pendiente: no se deben inventar reemplazos, bots o derrotas automáticas.
+- El snapshot 6B no expone el nivel aceptado ni el equipo aceptante de Truco/Retruco/Vale Cuatro: `desafiosPendientes.truco` solo representa una propuesta pendiente. Si 6C debe mostrar esa apuesta, se requiere decidir una ampliación explícita del contrato.
+- Envido y Flor actualizan el marcador, pero 6B no publica adjudicación, ganador, tantos, puntos ni causa. Una mesa que deba explicar el resultado necesita una proyección o evento semántico definido antes de depender de esa información.
+- El servidor avanza automáticamente tras el cierre de una mano, pero el contrato no identifica el ganador, la causa, el cierre ni el inicio de la siguiente mano. Tampoco expone una finalización de partido ni su ganador; llegar a la meta puede inferirse del marcador, pero no sustituye un estado terminal público.
+- Las señas 2v2, salas, búsqueda, identidades, estadísticas, revancha y accesibilidad de la mesa pertenecen a trabajo futuro de producto.
+- El documento anterior describía 2v2, retiros individuales, marcador acumulado y relojes como capacidades previstas. Esas capacidades son parte del motor actual; las responsabilidades de servidor y cliente siguen siendo futuras.
