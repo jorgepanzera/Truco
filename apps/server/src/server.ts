@@ -107,12 +107,16 @@ export function crearServidor(opciones: OpcionesServidor = {}): Server {
         const sesion = repositorio.autenticar(tokenBearer(solicitud));
         const cuerpo = await leerCuerpoJson(solicitud);
         exigirSoloCampos(cuerpo, ["targetScore", "mode"]);
-        if (cuerpo.mode !== undefined && cuerpo.mode !== "1v1")
+        if (cuerpo.mode !== undefined && cuerpo.mode !== "1v1" && cuerpo.mode !== "1v1-vs-machine")
           throw new ErrorHttp(400, "solicitud-invalida", "La única modalidad disponible es 1v1.");
         const metaPuntos = cuerpo.targetScore === undefined ? 40 : cuerpo.targetScore;
         if (metaPuntos !== 30 && metaPuntos !== 40)
           throw new ErrorHttp(400, "solicitud-invalida", "targetScore debe ser 30 o 40.");
-        const partida = repositorio.crearPartida(sesion, metaPuntos);
+        const partida = repositorio.crearPartida(
+          sesion,
+          metaPuntos,
+          cuerpo.mode === "1v1-vs-machine",
+        );
         responderJson(respuesta, 201, {
           matchId: partida.id,
           asiento: 0,

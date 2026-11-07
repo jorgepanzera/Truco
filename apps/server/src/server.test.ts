@@ -9,6 +9,118 @@ import { tieneFlor } from "@truco/game-engine";
 import type { Carta } from "@truco/shared";
 import { leerConfiguracion } from "./config.js";
 import { crearServidor } from "./server.js";
+import { RepositorioPartidasEnMemoria } from "./matches.js";
+
+test("6C.6: partida contra máquina inicia sin espera y no expone su mano", () => {
+  const repositorio = new RepositorioPartidasEnMemoria({ enteroInclusivo: () => 0 });
+  const sesionCreada = repositorio.crearSesion("Ana");
+  const humano = repositorio.autenticar(sesionCreada.token);
+  const partida = repositorio.crearPartida(humano, 30, true);
+  const snapshot = repositorio.snapshot(partida.id, humano);
+  assert.equal(snapshot.estado, "iniciada");
+  assert.equal(snapshot.metaPuntos, 30);
+  assert.equal(snapshot.participantes.length, 2);
+  assert.equal(snapshot.participantes[1]?.automatico, true);
+  assert.equal(snapshot.cartasPropias.length, 3);
+  assert.equal(JSON.stringify(snapshot).includes("__maquina__"), false);
+});
+
+test("6C.6: el servidor invoca una política inyectada sólo con acciones legales", () => {
+  let llamadas = 0;
+  const repositorio = new RepositorioPartidasEnMemoria(
+    { enteroInclusivo: () => 0 },
+    {
+      decidir: ({ accionesLegales }) => {
+        llamadas += 1;
+        return (
+          accionesLegales.find((accion) => accion.tipo === "anunciar-flor") ??
+          accionesLegales.find((accion) => accion.tipo === "jugar-carta") ??
+          accionesLegales[0] ??
+          null
+        );
+      },
+    },
+  );
+  const creada = repositorio.crearSesion("Ana");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const snapshot = repositorio.snapshot(partida.id, humano);
+  assert.ok(llamadas > 0);
+  assert.equal(snapshot.estado, "iniciada");
+  assert.equal(JSON.stringify(snapshot).includes("__maquina__"), false);
+});
+
+test("6C.6: retiro conserva oportunidad de Flor y no bloquea el avance", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(
+    { enteroInclusivo: () => 0 },
+    {
+      decidir: ({ accionesLegales }) =>
+        accionesLegales.find((a) => a.tipo === "irse-al-mazo") ?? accionesLegales[0] ?? null,
+    },
+  );
+  const creada = repositorio.crearSesion("Ana");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 30, true);
+  let version = repositorio.snapshot(partida.id, humano).version;
+  let cierres = 0;
+  for (let intento = 0; intento < 2; intento++) {
+    const snapshot = repositorio.snapshot(partida.id, humano);
+    assert.equal(snapshot.estado, "iniciada");
+    const resultado = repositorio.aplicarAccion(partida.id, humano, {
+      actionId: `mazo-${intento}`,
+      expectedVersion: snapshot.version,
+      action: snapshot.desafiosPendientes.oportunidadFlorPropia
+        ? { type: "announce-flor" }
+        : { type: "go-to-mazo" },
+    });
+    assert.equal(resultado.aceptada, true, resultado.codigo);
+    assert.ok(resultado.version > version);
+    version = resultado.version;
+    cierres += 1;
+  }
+  assert.ok(cierres > 0);
+});
+
+test("6C.6-R2: humano y máquina juegan cartas reglamentarias mediante bazas", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(
+    { enteroInclusivo: () => 0 },
+    {
+      decidir: ({ accionesLegales }) =>
+        accionesLegales.find((a) => a.tipo === "anunciar-flor") ??
+        accionesLegales.find((a) => a.tipo === "jugar-carta") ??
+        accionesLegales.find((a) => a.tipo.startsWith("no-quiero")) ??
+        null,
+    },
+  );
+  const creada = repositorio.crearSesion("Ana");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  let jugadasHumanas = 0;
+  let cartasPublicasMaximas = 0;
+  let versionAnterior = 0;
+  for (let paso = 0; paso < 8; paso++) {
+    const snapshot = repositorio.snapshot(partida.id, humano);
+    assert.equal(snapshot.estado, "iniciada");
+    cartasPublicasMaximas = Math.max(cartasPublicasMaximas, snapshot.cartasJugadas.length);
+    assert.ok(snapshot.version >= versionAnterior);
+    versionAnterior = snapshot.version;
+    if (snapshot.turno !== snapshot.asientoPropio) continue;
+    const carta = snapshot.cartasPropias[0];
+    assert.ok(carta);
+    const resultado = repositorio.aplicarAccion(partida.id, humano, {
+      actionId: `carta-${paso}`,
+      expectedVersion: snapshot.version,
+      action: { type: "play-card", card: carta },
+    });
+    assert.equal(resultado.aceptada, true, resultado.codigo);
+    jugadasHumanas += 1;
+  }
+  const final = repositorio.snapshot(partida.id, humano);
+  assert.equal(final.estado, "iniciada");
+  assert.ok(jugadasHumanas > 0);
+  assert.ok(repositorio.metricasPrueba(partida.id, humano).cartas >= jugadasHumanas);
+  assert.equal(JSON.stringify(final).includes("__maquina__"), false);
+});
 
 test("configuración: valores por defecto y puertos válidos", () => {
   assert.deepEqual(leerConfiguracion({}), { host: "127.0.0.1", puerto: 3000 });

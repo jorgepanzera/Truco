@@ -9,6 +9,11 @@ export * from "./truco.js";
 export * from "./coordinador.js";
 export * from "./temporal.js";
 export * from "./partida.js";
+export * from "./jugador-automatico.js";
+export * from "./estrategia-cartas.js";
+export * from "./estrategia-truco.js";
+export * from "./estrategia-envido-flor.js";
+export * from "./estrategia-global.js";
 
 // Infraestructura de compilación; no representa comportamiento de juego.
 export const engineDependencies = [sharedPackage] as const;

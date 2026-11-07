@@ -2,7 +2,7 @@
 
 ## 1. Propósito y alcance
 
-Este documento describe la arquitectura técnica real del monorepo al cierre de la Fase 6B. Es una referencia para los incrementos posteriores; no sustituye las reglas de juego ni define requisitos de producto.
+Este documento describe la arquitectura técnica real del monorepo al cierre del correctivo 6C.4-R1. Es una referencia para los incrementos posteriores; no sustituye las reglas de juego ni define requisitos de producto.
 
 El [Reglamento v1.6](REGLAMENTO_TRUCO_URUGUAYO_v1.6.md) prevalece para reglas reglamentarias y la [Especificación Funcional v1.4](ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md) para comportamiento de producto y alcance. El [README](../README.md) contiene la instalación y los comandos de uso.
 
@@ -118,6 +118,38 @@ El estado canónico se conserva exclusivamente dentro del servidor. La proyecci�
 
 6B añade `auth.ok`, `game.snapshot`, `game.confirmed`, `game.rejected` y `error`. `game.confirmed` solo identifica la acción y su versión; `game.rejected` añade un código y la versión vigente. Después de una acción aceptada se emite un snapshot privado actualizado a cada suscriptor de la partida. No hay eventos públicos semánticos de adjudicación ni de ciclo de mano. Por ello, el marcador acumulado, las cartas, el turno y los desafíos pendientes están disponibles; los resultados de Envido o Flor solo pueden inferirse parcialmente de un cambio en el marcador. Tampoco se expone el nivel de la apuesta de Truco ya aceptada, el ganador de una mano, su cierre, ni un resultado terminal explícito del partido.
 
+### Contratos de jugador automático (6C.1)
+
+`packages/game-engine/src/jugador-automatico.ts` prepara la integración offline sin conectar aún turnos automáticos al servidor. `crearObservacionJugadorAutomatico` construye `ObservacionJugadorAutomatico` desde el estado canónico y un jugador: copia sus cartas, la muestra, tanteador, turno, bazas y cantos públicos; nunca contiene `EstadoPartida`, mazo, entregas ni cartas de rivales.
+
+`obtenerAccionesLegalesJugador` genera intenciones posibles y conserva únicamente las que `ejecutarAccionPartida` acepta. La IA no duplica reglas ni prioridades: cartas, Envido, Flor, Truco, respuestas, aumentos y mazo siguen siendo autoridad exclusiva del motor. No existe una acción compuesta de Flor y Truco.
+
+`PoliticaEstrategica` recibe solo la observación, esas acciones legales y una `FuenteAleatoria` inyectada. `ejecutarDecisionAutomatica` es el orquestador puro: verifica que la decisión pertenezca al conjunto legal, le asigna el jugador y la ejecuta mediante el motor. `politicaPrimeraAccionLegal` es una política mínima de prueba, no una estrategia. Esta frontera no modifica los contratos HTTP o WebSocket 6B ni agrega dependencias al motor.
+
+### Estrategia de cartas y bazas (6C.2)
+
+`packages/game-engine/src/estrategia-cartas.ts` incorpora `politicaEstrategicaCartas` para 1v1. Reutiliza `obtenerJerarquia` y `compararCartas` de `cartas.ts`, y `evaluarResultadosBazas` del motor para respetar piezas, alcahuete, pardas y la tabla reglamentaria de cierre. No duplica jerarquía ni reglas de determinación de la mano.
+
+Al responder una carta pública, prioriza una victoria de mano decisiva, luego ganar, luego empardar, y en igualdad usa la carta de menor costo que logra ese resultado. Al salir, preserva cartas fuertes salvo cuando el historial deja una segunda baza potencialmente decisiva, caso en el que favorece la probabilidad de imponerse. Los desempates consumen solamente `FuenteAleatoria` inyectada.
+
+`estimarIncertidumbre` forma el universo de cartas posibles quitando del mazo únicamente la muestra, las cartas propias y las jugadas públicas. Sus proporciones de carta rival más fuerte, igual o más débil son una heurística explicable: no sabe cuáles cartas tiene el adversario y tampoco condiciona el conjunto a un reparto oculto concreto. No hay simulación Monte Carlo, memoria del rival ni estrategia de tanteador en este slice.
+
+La política sólo toma decisiones estratégicas entre acciones `jugar-carta`. Ante un canto o respuesta que sea la única acción legal usa el primer fallback legal del contrato 6C.1, sin presentarlo como decisión estratégica de Truco, Envido o Flor.
+
+### Estrategia de Truco (6C.3)
+
+`packages/game-engine/src/estrategia-truco.ts` agrega `evaluarManoParaTruco`, `evaluarRiesgoTruco`, `seleccionarAccionTruco` y la política compuesta `politicaEstrategicaTruco`. La fuerza combina las probabilidades por cada carta restante que provee `estimarIncertidumbre`, la cantidad de cartas competitivas y las bazas públicas ganadas o perdidas; no se reduce a la carta de mayor jerarquía ni consulta cartas ocultas.
+
+El riesgo reglamentario está expresado por nivel: Truco vale 2 al aceptarse y 1 al rechazarse; Retruco, 3 y 2; Vale Cuatro, 4 y 3. Los umbrales conservadores separan aceptar de aumentar: subir exige más confianza que mantener la apuesta. La política sólo selecciona una propuesta, aceptación, rechazo o aumento que ya aparezca en las acciones legales del motor. Si una carta puede decidir inmediatamente la mano, conserva la decisión de cartas antes que abrir una apuesta nueva.
+
+`politicaEstrategicaTruco` intenta la selección de Truco y luego reutiliza exactamente `politicaEstrategicaCartas`; no duplica su evaluación. Envido y Flor siguen sin estrategia: sus prioridades dependen del motor y el fallback legal no se presenta como una decisión inteligente. No se incluyen ajuste por tanteador, perfiles del rival, Monte Carlo ni niveles de dificultad.
+
+### Estrategia global (6C.5)
+
+`estrategia-global.ts` agrega una política pura para 1v1 que reconstruye memoria pública desde la observación y calcula distancia a la meta, ventaja, amenaza terminal y utilidad esperada. La utilidad combina puntos esperados con consecuencias de ganar o perder inmediatamente el partido; sus probabilidades son heurísticas explicables, no estimaciones calibradas. Preserva acciones obligatorias y respuestas pendientes antes de comparar apuestas opcionales y cartas. La incertidumbre excluye muestra, cartas propias y cartas públicas, pero distingue implícitamente el conjunto desconocido del reparto real: no presupone que toda carta desconocida sea del rival. No hay memoria entre manos, perfiles, aprendizaje, simulación compleja ni soporte estratégico 2v2.
+
+La capa global modula propuestas y respuestas de Truco según tanteador y puede renunciar a apuestas opcionales para jugar carta. La selección de carta conserva la heurística 6C.2: no implementa todavía sacrificio de baza guiado por el tanteador ni búsqueda de futuro. Las enumeraciones de Envido/Flor son exactas sobre combinaciones públicas compatibles, pero se recomputan por decisión; son adecuadas para 1v1 interactivo y no constituyen una simulación de reparto ni de aceptación rival.
+
 ## 6. Modelo de estado y flujo de juego
 
 El flujo reglamentario vigente es:
@@ -142,6 +174,8 @@ En 6B el servidor ya asocia una acción autenticada y versionada con `EstadoPart
 ## 7. Arquitectura del servidor actual
 
 `apps/server` contiene la primera frontera autoritativa de partidas online. Su almacenamiento es temporal en memoria y no sustituye la persistencia de 6D.
+
+En 6C.6, `POST /api/matches` admite `mode: "1v1-vs-machine"`. El repositorio crea el asiento interno estable `__maquina__`, inicia el reparto de inmediato y encadena decisiones con `politicaEstrategicaGlobal` exclusivamente mediante `ejecutarDecisionAutomatica`. La máquina no posee sesión ni WebSocket y su mano nunca se proyecta al humano. Cada transición automática incrementa la versión canónica; el avance detecta estados repetidos y se detiene al requerir una decisión humana o al finalizar la partida. El flujo humano–humano conserva la sala de espera existente.
 
 - [main.ts](../apps/server/src/main.ts) lee la configuración, abre el servidor y atiende `SIGINT`/`SIGTERM`.
 - [config.ts](../apps/server/src/config.ts) valida `TRUCO_SERVER_HOST` y `TRUCO_SERVER_PORT`; los valores predeterminados son `127.0.0.1:3000`.
@@ -227,15 +261,22 @@ Al cierre técnico de Fase 5, el motor tenía 214 pruebas aprobadas. El resultad
 | Seguridad online | Implementado parcialmente | Credenciales de invitado, autorización por partida, filtrado de snapshots e idempotencia acotada en memoria; sin sesiones durables, idempotencia transaccional ni recuperación. |
 | Señas 2v2 | Pendiente | Catálogo, privacidad y entrega al compañero. |
 
-## 14. Estado de la Fase 6 al cierre de 6B
+## 14. Estado de la Fase 6 al cierre de 6C.4-R1
 
-La Fase 6 reutiliza el Game Engine como núcleo reglamentario y agrega infraestructura alrededor de él. Al cierre de 6B, los incrementos tienen el siguiente estado:
+La Fase 6 reutiliza el Game Engine como núcleo reglamentario y agrega infraestructura alrededor de él. Al cierre de 6C.4-R1, los incrementos tienen el siguiente estado:
 
 | Incremento | Responsabilidad arquitectónica |
 |---|---|
 | 6A | Implementado: servidor autoritativo inicial y API HTTP de partidas 1v1. |
 | 6B | Implementado: autenticación inicial, suscripción privada, comandos 1v1 versionados, confirmación/rechazo y snapshots actualizados. No incluye eventos de resultado, persistencia, relojes ni reconexión. |
-| 6C | Cliente mínimo para la primera partida jugable 1v1. |
+| 6C.1 | Implementado: contratos de observación, acciones legales, políticas intercambiables y orquestador puro para jugador automático. Sin estrategia, UI ni activación de turnos automáticos. |
+| 6C.2 | Implementado: estrategia 1v1 de cartas y bazas con jerarquía canónica, conservación de fuerza e incertidumbre simple. Sin estrategia de apuestas. |
+| 6C.3 | Implementado: evaluación de mano, riesgo por nivel y política compuesta de cartas con Truco, Retruco y Vale Cuatro. Sin estrategia de Envido o Flor. |
+| 6C.4 | Implementado (R1): estrategia 1v1 de Envido y Flor. Selecciona explícitamente Envido, Real Envido y Falta Envido entre las acciones legales, y compone Flor → Envido → Truco → cartas. La valoración de Flor simple es determinista (3 puntos por Flor sin comparación); Contra Flor y Contra Flor al Resto sólo usan comparación cuando existe desafío. En empate de desempate, Contra Flor al Resto no se modela como victoria directa; el motor conserva la adjudicación reglamentaria de 3 puntos. Las estimaciones de comparación y prioridad de mano son deliberadamente 1v1; no se aplican silenciosamente a 2v2. |
+| 6C.5 | Implementado: política global 1v1 con evaluación de tanteador, riesgo/beneficio, memoria pública reconstruida e incertidumbre explícitamente heurística. Sin 2v2. |
+| 6C.6 | Implementado: integración servidor humano contra máquina, inicio inmediato, decisiones automáticas reglamentarias, versionado, privacidad y resumen público de cierre. Pendiente de validación integral hasta victoria, matriz especializada de desafíos y matriz WebSocket de secuencias automáticas. |
+| 6C.7 | Pendiente: interfaz jugable. |
+| 6C.8 | Pendiente: pruebas integrales. |
 | 6D | Persistencia transaccional, registro de acciones e idempotencia. |
 | 6E | Agenda real de relojes, desconexiones y reconexión. |
 | 6F | Multijugador 2v2, proyecciones por destinatario y señas privadas. |

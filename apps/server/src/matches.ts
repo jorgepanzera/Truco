@@ -10,6 +10,9 @@ import {
   seleccionarPrimerRepartidor,
   contabilizarManoCerrada,
   siguienteMano,
+  ejecutarDecisionAutomatica,
+  politicaEstrategicaGlobal,
+  type PoliticaEstrategica,
   type EstadoPartida,
   type Mesa,
 } from "@truco/game-engine";
@@ -18,18 +21,27 @@ import { aAccionCoordinada, type AccionRed } from "./game-actions.js";
 
 export type SesionInvitado = Readonly<{ id: string; apodo: string }>;
 type SesionInterna = SesionInvitado & Readonly<{ token: string }>;
-type Asiento = Readonly<{ jugadorId: string; apodo: string }>;
+type Asiento = Readonly<{ jugadorId: string; apodo: string; automatico?: boolean }>;
 type EstadoMatch = "esperando" | "iniciada";
 
 type PartidaInterna = {
   id: string;
   modalidad: "1v1";
+  contraMaquina: boolean;
   metaPuntos: MetaPuntos;
   estado: EstadoMatch;
   asientos: [Asiento | null, Asiento | null];
   version: number;
   canonico: EstadoPartida | null;
   acciones: Map<string, ResultadoAccion>;
+  metricas: { cartas: number; bazas: number; manos: number; puntos: number };
+  ultimoCierre: {
+    idMano: string;
+    version: number;
+    equipo: string;
+    puntos: number;
+    causa: string;
+  } | null;
 };
 
 export type SolicitudAccion = Readonly<{
@@ -67,7 +79,7 @@ export type SnapshotEspera = Readonly<{
   metaPuntos: MetaPuntos;
   version: number;
   asientoPropio: number;
-  participantes: readonly Readonly<{ asiento: number; apodo: string }>[];
+  participantes: readonly Readonly<{ asiento: number; apodo: string; automatico?: boolean }>[];
 }>;
 
 export type SnapshotIniciado = Readonly<{
@@ -77,7 +89,7 @@ export type SnapshotIniciado = Readonly<{
   metaPuntos: MetaPuntos;
   version: number;
   asientoPropio: number;
-  participantes: readonly Readonly<{ asiento: number; apodo: string }>[];
+  participantes: readonly Readonly<{ asiento: number; apodo: string; automatico?: boolean }>[];
   marcador: readonly Readonly<{ asiento: number; puntos: number }>[];
   repartidor: number;
   muestra: Carta;
@@ -88,7 +100,15 @@ export type SnapshotIniciado = Readonly<{
     envido: Readonly<{ proponente: number; respondedor: number; valor: number }> | null;
     flor: Readonly<{ tipo: string; proponente: number; respondedor: number }> | null;
     truco: Readonly<{ nivel: string; proponente: number }> | null;
+    oportunidadFlorPropia: boolean;
   }>;
+  ultimoCierre: Readonly<{
+    idMano: string;
+    version: number;
+    equipo: string;
+    puntos: number;
+    causa: string;
+  }> | null;
 }>;
 
 export type SnapshotPartida = SnapshotEspera | SnapshotIniciado;
@@ -126,7 +146,10 @@ export class RepositorioPartidasEnMemoria {
   readonly #sesiones = new Map<string, SesionInterna>();
   readonly #partidas = new Map<string, PartidaInterna>();
 
-  constructor(private readonly aleatoriedad: FuenteAleatoria = fuenteSegura()) {}
+  constructor(
+    private readonly aleatoriedad: FuenteAleatoria = fuenteSegura(),
+    private readonly politicaAutomatica: PoliticaEstrategica = politicaEstrategicaGlobal,
+  ) {}
 
   crearSesion(apodo: unknown): Readonly<{ token: string; apodo: string }> {
     if (typeof apodo !== "string" || !esApodoValido(apodo))
@@ -146,20 +169,31 @@ export class RepositorioPartidasEnMemoria {
     return { id: sesion.id, apodo: sesion.apodo };
   }
 
-  crearPartida(creador: SesionInvitado, metaPuntos: MetaPuntos): PartidaInterna {
+  crearPartida(
+    creador: SesionInvitado,
+    metaPuntos: MetaPuntos,
+    contraMaquina = false,
+  ): PartidaInterna {
     if (metaPuntos !== 30 && metaPuntos !== 40)
       error("solicitud-invalida", "metaPuntos debe ser 30 o 40.");
     const partida: PartidaInterna = {
       id: this.#nuevoIdPartida(),
       modalidad: "1v1",
+      contraMaquina,
       metaPuntos,
       estado: "esperando",
-      asientos: [{ jugadorId: creador.id, apodo: creador.apodo }, null],
+      asientos: [
+        { jugadorId: creador.id, apodo: creador.apodo },
+        contraMaquina ? { jugadorId: "__maquina__", apodo: "Máquina", automatico: true } : null,
+      ],
       version: 1,
       canonico: null,
       acciones: new Map(),
+      metricas: { cartas: 0, bazas: 0, manos: 0, puntos: 0 },
+      ultimoCierre: null,
     };
     this.#partidas.set(partida.id, partida);
+    if (contraMaquina) this.iniciar(partida.id, creador);
     return partida;
   }
 
@@ -203,7 +237,8 @@ export class RepositorioPartidasEnMemoria {
           codigo: transicion.rechazo.codigo,
         };
       } else {
-        partida.canonico = this.#avanzarPartida(transicion.estado);
+        partida.canonico = this.#avanzarPartida(transicion.estado, partida);
+        if (solicitud.action.type === "play-card") partida.metricas.cartas += 1;
         partida.version += 1;
         resultado = { huella, aceptada: true, version: partida.version };
       }
@@ -255,6 +290,7 @@ export class RepositorioPartidasEnMemoria {
     );
     partida.estado = "iniciada";
     partida.version += 1;
+    partida.canonico = this.#avanzarPartida(partida.canonico, partida);
     return partida;
   }
 
@@ -262,7 +298,7 @@ export class RepositorioPartidasEnMemoria {
     const partida = this.#obtenerParaJugador(partidaId, sesion.id);
     const asientoPropio = this.#asientoDe(partida, sesion.id);
     const participantes = partida.asientos.flatMap((asiento, indice) =>
-      asiento ? [{ asiento: indice, apodo: asiento.apodo }] : [],
+      asiento ? [{ asiento: indice, apodo: asiento.apodo, automatico: asiento.automatico }] : [],
     );
     if (partida.estado === "esperando")
       return {
@@ -329,8 +365,35 @@ export class RepositorioPartidasEnMemoria {
               proponente: asientoDe(estado.mano.truco.propuestaPendiente.proponente),
             }
           : null,
+        oportunidadFlorPropia:
+          estado.mano.liquidacionMazo?.oportunidadFlor?.estado === "pendiente" &&
+          estado.mano.liquidacionMazo.oportunidadFlor.jugador === sesion.id,
       },
+      ultimoCierre: partida.ultimoCierre,
     };
+  }
+
+  /** Diagnóstico acotado para pruebas de integración; no se publica por HTTP/WebSocket. */
+  diagnosticar(partidaId: string, sesion: SesionInvitado): Readonly<Record<string, unknown>> {
+    const partida = this.#obtenerParaJugador(partidaId, sesion.id);
+    const estado = partida.canonico;
+    if (!estado) return { estado: partida.estado };
+    return {
+      fasePartida: estado.fase,
+      ciclo: estado.mano.ciclo,
+      juegoFinalizado: estado.mano.juego.finalizada,
+      turno: estado.mano.juego.jugadorTurno,
+      retirados: estado.mano.juego.retirados,
+      liquidacionMazo: estado.mano.liquidacionMazo,
+      envidoPendiente: estado.mano.envido.pendiente !== null,
+      florPendiente: estado.mano.flor.pendiente !== null,
+      trucoPendiente: estado.mano.truco.propuestaPendiente !== null,
+    };
+  }
+
+  metricasPrueba(partidaId: string, sesion: SesionInvitado): Readonly<Record<string, number>> {
+    const partida = this.#obtenerParaJugador(partidaId, sesion.id);
+    return { ...partida.metricas };
   }
 
   #obtener(id: string): PartidaInterna {
@@ -364,16 +427,52 @@ export class RepositorioPartidasEnMemoria {
     return barajarMazo(crearMazo(), elecciones);
   }
 
-  #avanzarPartida(estadoInicial: EstadoPartida): EstadoPartida {
+  #debeActuarMaquina(estado: EstadoPartida, maquina: string): boolean {
+    if (estado.mano.juego.jugadorTurno === maquina) return true;
+    if (estado.mano.liquidacionMazo?.oportunidadFlor?.estado === "pendiente")
+      return estado.mano.liquidacionMazo.oportunidadFlor.jugador === maquina;
+    const equipo = estado.mesa.jugadores.find((jugador) => jugador.id === maquina)?.equipo;
+    if (!equipo) return false;
+    return (
+      estado.mano.envido.pendiente?.equipoRespondedor === equipo ||
+      estado.mano.flor.pendiente?.equipoRespondedor === equipo ||
+      (estado.mano.truco.propuestaPendiente !== null &&
+        estado.mesa.jugadores.find(
+          (jugador) => jugador.id === estado.mano.truco.propuestaPendiente?.proponente,
+        )?.equipo !== equipo)
+    );
+  }
+
+  #avanzarPartida(estadoInicial: EstadoPartida, partida?: PartidaInterna): EstadoPartida {
     let estado = estadoInicial;
-    for (let pasos = 0; pasos < 4; pasos++) {
+    const vistos = new Set<string>();
+    for (let pasos = 0; pasos < 64; pasos++) {
+      const firma = JSON.stringify(estado);
+      if (vistos.has(firma)) throw new Error("Ciclo detectado durante avance automático.");
+      vistos.add(firma);
       if (estado.mano.ciclo.fase === "cierre-definitivo") {
         const contabilizada = contabilizarManoCerrada(estado);
         if (!contabilizada.aceptada) throw new Error("No se pudo contabilizar una mano cerrada.");
+        if (partida?.contraMaquina) partida.version += 1;
+        if (partida) {
+          const puntos = Object.values(
+            contabilizada.estado.manosContabilizadas.at(-1)?.puntos ?? {},
+          ).reduce((a, b) => a + b, 0);
+          partida.metricas.manos += 1;
+          partida.metricas.puntos += puntos;
+          partida.ultimoCierre = {
+            idMano: `mano-${estado.ordinalMano}`,
+            version: partida.version,
+            equipo: estado.mano.ciclo.equipoGanador,
+            puntos,
+            causa: estado.mano.ciclo.causa,
+          };
+        }
         if (contabilizada.estado.fase === "partida-finalizada") return contabilizada.estado;
         const siguiente = siguienteMano(contabilizada.estado, this.#mazoAleatorio());
         if (!siguiente.aceptada) throw new Error("No se pudo preparar la siguiente mano.");
         estado = siguiente.estado;
+        if (partida?.contraMaquina) partida.version += 1;
         continue;
       }
       const liquidacion = estado.mano.liquidacionMazo;
@@ -384,12 +483,33 @@ export class RepositorioPartidasEnMemoria {
         const liquidada = ejecutarAccionPartida(estado, { tipo: "liquidar-puntos-mazo" });
         if (!liquidada.aceptada) throw new Error("No se pudo liquidar el mazo.");
         estado = liquidada.estado;
+        if (partida?.contraMaquina) partida.version += 1;
         continue;
       }
       if (liquidacion?.puntos === "realizada" && estado.mano.ciclo.fase === "liquidacion") {
         const cerrada = ejecutarAccionPartida(estado, { tipo: "cerrar-mano-mazo" });
         if (!cerrada.aceptada) throw new Error("No se pudo cerrar la mano por mazo.");
         estado = cerrada.estado;
+        if (partida?.contraMaquina) partida.version += 1;
+        continue;
+      }
+      const maquina = partida?.asientos.find((asiento) => asiento?.automatico)?.jugadorId;
+      if (maquina && this.#debeActuarMaquina(estado, maquina)) {
+        const decision = ejecutarDecisionAutomatica(estado, maquina, this.politicaAutomatica, {
+          siguiente: () => this.aleatoriedad.enteroInclusivo(1) / 2,
+        });
+        if (!decision.aceptada)
+          throw new Error(`La máquina no pudo decidir: ${decision.rechazo.codigo}.`);
+        estado = decision.estado;
+        if (partida) {
+          partida.metricas.cartas += decision.eventos.filter(
+            (evento) => evento.tipo === "carta-jugada",
+          ).length;
+          partida.metricas.bazas += decision.eventos.filter(
+            (evento) => evento.tipo === "baza-resuelta",
+          ).length;
+        }
+        if (partida) partida.version += 1;
         continue;
       }
       return estado;

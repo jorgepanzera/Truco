@@ -4,7 +4,9 @@ Base del monorepositorio para la aplicación web de Truco Uruguayo. Los document
 
 La [arquitectura de la aplicación](docs/ARQUITECTURA.md) describe los módulos, sus dependencias y el estado de implementación.
 
-El proyecto todavía no es jugable de extremo a extremo. El motor de reglas está implementado; las Fases 6A y 6B incorporan sesiones de invitado, partidas 1v1 en memoria, acciones versionadas y sincronización privada por WebSocket. La mesa web, la persistencia durable, la reconexión y la IA siguen pendientes.
+El proyecto todavía no es jugable de extremo a extremo. El motor de reglas está implementado; las Fases 6A y 6B incorporan sesiones de invitado, partidas 1v1 en memoria, acciones versionadas y sincronización privada por WebSocket. `POST /api/matches` admite `mode: "1v1-vs-machine"` para iniciar inmediatamente contra la máquina; no requiere una segunda sesión. La mesa web, la persistencia durable y la reconexión siguen pendientes.
+
+La etapa 6C incorpora el jugador automático 1v1, estrategias de cartas, apuestas y tanteador, e inicio inmediato contra máquina mediante `mode: "1v1-vs-machine"`. La validación integral de partidas completas y la matriz especializada de desafíos contra máquina siguen pendientes.
 
 ## Estructura
 
