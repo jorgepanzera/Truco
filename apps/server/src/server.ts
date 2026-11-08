@@ -1,9 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { ErrorDeOperacion, RepositorioPartidasEnMemoria, type FuenteAleatoria } from "./matches.js";
+import type { PoliticaEstrategica } from "@truco/game-engine";
 import { instalarWebSocket } from "./websocket.js";
 
 const LIMITE_CUERPO_BYTES = 16 * 1024;
-type OpcionesServidor = Readonly<{ aleatoriedad?: FuenteAleatoria }>;
+type OpcionesServidor = Readonly<{
+  aleatoriedad?: FuenteAleatoria;
+  politicaAutomatica?: PoliticaEstrategica;
+}>;
 type CuerpoJson = Readonly<Record<string, unknown>>;
 
 class ErrorHttp extends Error {
@@ -84,7 +88,10 @@ function idDePartida(ruta: string): string | null {
 
 /** Crea el HTTP de 6A sin abrir un puerto. El estado en memoria vive con este servidor. */
 export function crearServidor(opciones: OpcionesServidor = {}): Server {
-  const repositorio = new RepositorioPartidasEnMemoria(opciones.aleatoriedad);
+  const repositorio = new RepositorioPartidasEnMemoria(
+    opciones.aleatoriedad,
+    opciones.politicaAutomatica,
+  );
   const servidor = createServer(async (solicitud, respuesta) => {
     const url = new URL(solicitud.url ?? "/", "http://localhost");
     const ruta = url.pathname;

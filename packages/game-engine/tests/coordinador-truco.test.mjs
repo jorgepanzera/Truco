@@ -833,6 +833,156 @@ test("Envido y Flor suspenden Truco pendiente, lo preservan y permiten reanudarl
   );
 });
 
+test("§6.1 v1.7: el respondedor puede abrir Envido fuera de turno y conserva Truco pendiente", () => {
+  for (const canto of ["envido", "real-envido", "falta-envido"]) {
+    const { estado } = baseSinFlor();
+    const truco = ejecutarAccionCoordinada(estado, { tipo: "proponer-truco", jugador: "a" });
+    assert.equal(truco.estado.juego.jugadorTurno, "a");
+    const envido = ejecutarAccionCoordinada(truco.estado, {
+      tipo: "iniciar-envido",
+      jugador: "b",
+      canto,
+    });
+    assert.equal(envido.aceptada, true, canto);
+    assert.equal(envido.estado.juego.jugadorTurno, "a");
+    assert.deepEqual(envido.estado.truco, truco.estado.truco);
+    assert.equal(
+      ejecutarAccionCoordinada(envido.estado, { tipo: "quiero-truco", jugador: "b" }).rechazo
+        .codigo,
+      "envido-pendiente",
+    );
+    const resuelto = ejecutarAccionCoordinada(envido.estado, {
+      tipo: "quiero-envido",
+      jugador: "a",
+    });
+    assert.equal(resuelto.aceptada, true, canto);
+    assert.equal(resuelto.estado.envido.resueltos.length, 1);
+    assert.deepEqual(resuelto.estado.truco, truco.estado.truco);
+    assert.equal(resuelto.estado.juego.jugadorTurno, "a");
+    assert.equal(
+      ejecutarAccionCoordinada(resuelto.estado, {
+        tipo: "iniciar-envido",
+        jugador: "b",
+        canto: "envido",
+      }).rechazo.codigo,
+      "cadena-duplicada",
+    );
+    assert.equal(
+      ejecutarAccionCoordinada(resuelto.estado, { tipo: "proponer-retruco", jugador: "b" }).aceptada,
+      true,
+    );
+  }
+});
+
+test("§6.1 v1.7: Envido no cancela Retruco o Vale Cuatro pendiente", () => {
+  const { estado } = baseSinFlor();
+  const truco = ejecutarAccionCoordinada(estado, { tipo: "proponer-truco", jugador: "a" });
+  const retruco = ejecutarAccionCoordinada(truco.estado, { tipo: "proponer-retruco", jugador: "b" });
+  const envidoEnRetruco = ejecutarAccionCoordinada(retruco.estado, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  assert.equal(envidoEnRetruco.aceptada, true);
+  const retrucoReanudado = ejecutarAccionCoordinada(envidoEnRetruco.estado, {
+    tipo: "no-quiero-envido",
+    jugador: "b",
+  });
+  assert.deepEqual(retrucoReanudado.estado.truco, retruco.estado.truco);
+
+  const valeInicial = baseSinFlor().estado;
+  const valeTruco = ejecutarAccionCoordinada(valeInicial, { tipo: "proponer-truco", jugador: "a" });
+  const valeRetruco = ejecutarAccionCoordinada(valeTruco.estado, {
+    tipo: "proponer-retruco",
+    jugador: "b",
+  });
+  const vale = ejecutarAccionCoordinada(valeRetruco.estado, {
+    tipo: "proponer-vale-cuatro",
+    jugador: "a",
+  });
+  const envidoEnVale = ejecutarAccionCoordinada(vale.estado, {
+    tipo: "iniciar-envido",
+    jugador: "b",
+    canto: "envido",
+  });
+  assert.equal(envidoEnVale.aceptada, true);
+  assert.equal(envidoEnVale.estado.juego.jugadorTurno, "a");
+  const valeReanudado = ejecutarAccionCoordinada(envidoEnVale.estado, {
+    tipo: "quiero-envido",
+    jugador: "a",
+  });
+  assert.deepEqual(valeReanudado.estado.truco, vale.estado.truco);
+  assert.equal(
+    ejecutarAccionCoordinada(valeReanudado.estado, { tipo: "quiero-vale-cuatro", jugador: "b" })
+      .aceptada,
+    true,
+  );
+});
+
+test("§6.1 v1.7: en 2v2 un compañero respondedor abre Envido sin turno", () => {
+  const mesa2v2 = {
+    modalidad: "2v2",
+    jugadores: [
+      { id: "a", equipo: "A", posicion: 0 },
+      { id: "b", equipo: "B", posicion: 1 },
+      { id: "c", equipo: "A", posicion: 2 },
+      { id: "d", equipo: "B", posicion: 3 },
+    ],
+  };
+  const reparto = [
+    c("espada", 1), c("oro", 4), c("basto", 7), c("copa", 12),
+    c("copa", 2), c("espada", 5), c("oro", 10), c("basto", 1),
+    c("basto", 3), c("copa", 6), c("espada", 11), c("oro", 2),
+  ];
+  const muestra = c("copa", 7);
+  const mano = prepararMano(mesa2v2, "d", [
+    ...reparto,
+    muestra,
+    ...crearMazo().filter(
+      (carta) => ![...reparto, muestra].some((usada) => identidad(carta) === identidad(usada)),
+    ),
+  ]);
+  const estado = crearEstadoManoCoordinada(iniciarJuegoCartas(mano), {
+    metaPuntos: 40,
+    puntajesIniciales: { A: 0, B: 0 },
+    esDesempate: false,
+  });
+  const truco = ejecutarAccionCoordinada(estado, { tipo: "proponer-truco", jugador: "a" });
+  const envido = ejecutarAccionCoordinada(truco.estado, {
+    tipo: "iniciar-envido",
+    jugador: "d",
+    canto: "envido",
+  });
+  assert.equal(envido.aceptada, true);
+  assert.equal(envido.estado.juego.jugadorTurno, "a");
+  assert.deepEqual(envido.estado.truco, truco.estado.truco);
+});
+
+test("§6.1 v1.7: Flor pendiente conserva prioridad sobre la excepción de Envido", () => {
+  const { estado } = estadoConManos(
+    [
+      [c("oro", 1), c("oro", 3), c("oro", 6)],
+      [c("copa", 1), c("copa", 3), c("copa", 6)],
+    ],
+    c("espada", 7),
+  );
+  const truco = ejecutarAccionCoordinada(estado, { tipo: "proponer-truco", jugador: "a" });
+  const florA = ejecutarAccionCoordinada(truco.estado, { tipo: "anunciar-flor", jugador: "a" });
+  const florB = ejecutarAccionCoordinada(florA.estado, { tipo: "anunciar-flor", jugador: "b" });
+  const contra = ejecutarAccionCoordinada(florB.estado, {
+    tipo: "proponer-contra-flor",
+    jugador: "a",
+  });
+  assert.equal(
+    ejecutarAccionCoordinada(contra.estado, {
+      tipo: "iniciar-envido",
+      jugador: "b",
+      canto: "envido",
+    }).rechazo.codigo,
+    "flor-pendiente",
+  );
+});
+
 test("terminacion excepcional de Flor impide Truco y cartas sin alterar el desafio suspendido", () => {
   const { estado, mano } = estadoConManos(
     [
@@ -1404,7 +1554,7 @@ test("Con Flor Quiero anuncia fuera de turno y acepta Truco, Retruco y Vale Cuat
   });
   assert.deepEqual(
     conFlorTruco.eventos.map((evento) => evento.tipo),
-    ["flor-anunciada", "truco-aceptado"],
+    ["flor-anunciada", "fase-flor-cerrada", "flor-adjudicada", "truco-aceptado"],
   );
   assert.deepEqual(conFlorTruco.estado.truco, {
     apuestaActiva: { nivel: "truco", equipoAceptante: "B" },
@@ -1421,7 +1571,11 @@ test("Con Flor Quiero anuncia fuera de turno y acepta Truco, Retruco y Vale Cuat
     ],
   });
   assert.deepEqual(conFlorTruco.estado.flor.anuncios, [{ jugador: "b", equipo: "B" }]);
-  assert.equal(conFlorTruco.estado.flor.adjudicaciones.length, 0);
+  assert.equal(conFlorTruco.estado.flor.cerrado, true);
+  assert.deepEqual(conFlorTruco.estado.flor.adjudicaciones, [
+    { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+  ]);
   assert.equal(conFlorTruco.estado.juego, inicial.estado.juego);
 
   const retruco = ejecutarAccionCoordinada(conFlorTruco.estado, {
@@ -1432,7 +1586,7 @@ test("Con Flor Quiero anuncia fuera de turno y acepta Truco, Retruco y Vale Cuat
     tipo: "con-flor-quiero",
     jugador: "a",
   });
-  assert.equal(conFlorRetruco.rechazo.codigo, "flor-inexistente");
+  assert.equal(conFlorRetruco.rechazo.codigo, "fase-cerrada");
 
   const conFlores = estadoConManos(
     [
@@ -1483,8 +1637,18 @@ test("Con Flor Quiero cancela Envido, preserva prioridad y permite desafios post
   });
   assert.deepEqual(
     compuesto.eventos.map((evento) => evento.tipo),
-    ["flor-anunciada", "envido-cancelado-por-flor", "truco-aceptado"],
+    [
+      "flor-anunciada",
+      "fase-flor-cerrada",
+      "flor-adjudicada",
+      "envido-cancelado-por-flor",
+      "truco-aceptado",
+    ],
   );
+  assert.deepEqual(compuesto.estado.flor.adjudicaciones, [
+    { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+  ]);
   assert.equal(compuesto.estado.envido.pendiente, null);
   assert.deepEqual(compuesto.estado.envido.resueltos, []);
   assert.deepEqual(compuesto.estado.envido.cancelacionPorFlor, {
@@ -1507,6 +1671,8 @@ test("Con Flor Quiero cancela Envido, preserva prioridad y permite desafios post
     tipo: "con-flor-quiero",
     jugador: "b",
   });
+  assert.equal(respuesta.estado.flor.cerrado, false);
+  assert.deepEqual(respuesta.estado.flor.adjudicaciones, []);
   const anuncioPosterior = ejecutarAccionCoordinada(respuesta.estado, {
     tipo: "anunciar-flor",
     jugador: "a",
@@ -1788,6 +1954,55 @@ test("irse al mazo 1v1 es válido fuera del turno de carta", () => {
   assert.deepEqual(resultado.eventos, [{ tipo: "mano-decidida-por-mazo", equipo: "A" }]);
   assert.equal(resultado.estado.liquidacionMazo.puntos, "pendiente");
   assert.equal(resultado.estado.adjudicacionTruco, null);
+});
+
+test("irse al mazo cierra una segunda baza iniciada después de Truco aceptado", () => {
+  const { mano, estado: inicial } = estadoConManos(
+    [
+      [c("copa", 4), c("oro", 5), c("basto", 6)],
+      [c("espada", 1), c("espada", 3), c("oro", 7)],
+    ],
+    c("basto", 7),
+  );
+  const cartaDe = (estado, jugador) =>
+    estado.juego.cartasDisponibles.find((item) => item.jugador === jugador).cartas[0];
+  const primeraA = ejecutarAccionCoordinada(inicial, {
+    tipo: "jugar-carta",
+    jugador: "a",
+    carta: mano.manos.find((item) => item.jugador === "a").cartas[0],
+  });
+  assert.equal(primeraA.aceptada, true);
+  const truco = ejecutarAccionCoordinada(primeraA.estado, {
+    tipo: "proponer-truco",
+    jugador: "b",
+  });
+  assert.equal(truco.aceptada, true);
+  const aceptado = ejecutarAccionCoordinada(truco.estado, { tipo: "quiero-truco", jugador: "a" });
+  assert.equal(aceptado.aceptada, true);
+  const cierraPrimera = ejecutarAccionCoordinada(aceptado.estado, {
+    tipo: "jugar-carta",
+    jugador: "b",
+    carta: cartaDe(aceptado.estado, "b"),
+  });
+  assert.equal(cierraPrimera.aceptada, true);
+  assert.equal(cierraPrimera.estado.juego.bazasCompletadas[0].resultado.equipoGanador, "B");
+  const iniciaSegunda = ejecutarAccionCoordinada(cierraPrimera.estado, {
+    tipo: "jugar-carta",
+    jugador: "b",
+    carta: cartaDe(cierraPrimera.estado, "b"),
+  });
+  assert.equal(iniciaSegunda.aceptada, true);
+  assert.equal(iniciaSegunda.estado.juego.jugadorTurno, "a");
+  assert.equal(iniciaSegunda.estado.juego.cartasDisponibles.find((item) => item.jugador === "a").cartas.length, 2);
+  const retiro = ejecutarAccionCoordinada(iniciaSegunda.estado, {
+    tipo: "irse-al-mazo",
+    jugador: "a",
+  });
+  assert.equal(retiro.aceptada, true);
+  assert.equal(retiro.estado.juego.finalizada, true);
+  assert.equal(retiro.estado.juego.motivoFinalizacion, "mazo");
+  assert.equal(retiro.estado.liquidacionMazo.puntos, "pendiente");
+  assert.equal(retiro.estado.truco.apuestaActiva.nivel, "truco");
 });
 
 test("irse al mazo no confunde una fase de Flor abierta sin desafío pendiente", () => {
@@ -2210,10 +2425,11 @@ test("liquidación por mazo adjudica Flor ordinaria antes de Truco una sola vez"
           ],
           c("oro", 7),
         ).estado;
-        return ejecutarAccionCoordinada(estado, { tipo: "anunciar-flor", jugador: "a" }).estado;
+        return ejecutarAccionCoordinada(estado, { tipo: "anunciar-flor", jugador: "a" });
       },
       retirado: "a",
       puntosFlor: [3, 0],
+      adjudicadaAntesDeMazo: true,
     },
     {
       nombre: "Flor del activo",
@@ -2230,11 +2446,11 @@ test("liquidación por mazo adjudica Flor ordinaria antes de Truco una sola vez"
           jugador: "a",
           carta: mano.manos[0].cartas[0],
         });
-        return ejecutarAccionCoordinada(primera.estado, { tipo: "anunciar-flor", jugador: "b" })
-          .estado;
+        return ejecutarAccionCoordinada(primera.estado, { tipo: "anunciar-flor", jugador: "b" });
       },
       retirado: "a",
       puntosFlor: [0, 3],
+      adjudicadaAntesDeMazo: true,
     },
     {
       nombre: "Flores de ambos equipos",
@@ -2247,16 +2463,28 @@ test("liquidación por mazo adjudica Flor ordinaria antes de Truco una sola vez"
           c("oro", 7),
         ).estado;
         const florA = ejecutarAccionCoordinada(estado, { tipo: "anunciar-flor", jugador: "a" });
-        return ejecutarAccionCoordinada(florA.estado, { tipo: "anunciar-flor", jugador: "b" })
-          .estado;
+        return ejecutarAccionCoordinada(florA.estado, { tipo: "anunciar-flor", jugador: "b" });
       },
       retirado: "a",
       puntosFlor: [3, 3],
+      adjudicadaAntesDeMazo: false,
     },
   ];
 
   for (const escenario of escenarios) {
-    const mazo = ejecutarAccionCoordinada(escenario.crear(), {
+    const flor = escenario.crear();
+    assert.equal(flor.aceptada, true, escenario.nombre);
+    assert.deepEqual(
+      flor.estado.flor.adjudicaciones.map((adjudicacion) => adjudicacion.puntos),
+      escenario.adjudicadaAntesDeMazo ? escenario.puntosFlor : [],
+      escenario.nombre,
+    );
+    assert.equal(
+      flor.eventos.filter((evento) => evento.tipo === "flor-adjudicada").length,
+      escenario.adjudicadaAntesDeMazo ? 1 : 0,
+      escenario.nombre,
+    );
+    const mazo = ejecutarAccionCoordinada(flor.estado, {
       tipo: "irse-al-mazo",
       jugador: escenario.retirado,
     });
@@ -2282,14 +2510,20 @@ test("liquidación por mazo adjudica Flor ordinaria antes de Truco una sola vez"
       escenario.puntosFlor,
       escenario.nombre,
     );
-    assert.deepEqual(liquidado.eventos, [
-      { tipo: "flor-adjudicada", adjudicaciones: liquidado.estado.flor.adjudicaciones },
-      {
-        tipo: "mazo-adjudicado",
-        jugadorRetirado: escenario.retirado,
-        adjudicacion: { equipo: "B", puntos: 1, motivo: "mazo", nivel: null },
-      },
-    ]);
+    assert.deepEqual(
+      liquidado.eventos,
+      [
+        ...(escenario.adjudicadaAntesDeMazo
+          ? []
+          : [{ tipo: "flor-adjudicada", adjudicaciones: liquidado.estado.flor.adjudicaciones }]),
+        {
+          tipo: "mazo-adjudicado",
+          jugadorRetirado: escenario.retirado,
+          adjudicacion: { equipo: "B", puntos: 1, motivo: "mazo", nivel: null },
+        },
+      ],
+      escenario.nombre,
+    );
     const antesSegundoIntento = JSON.stringify(liquidado.estado);
     const segundoIntento = ejecutarAccionCoordinada(liquidado.estado, {
       tipo: "liquidar-puntos-mazo",
@@ -2379,6 +2613,15 @@ test("liquidación por mazo conserva Flor ordinaria con Vale Cuatro aceptado", (
     c("oro", 7),
   ).estado;
   const flor = ejecutarAccionCoordinada(estado, { tipo: "anunciar-flor", jugador: "a" });
+  assert.deepEqual(flor.eventos, [
+    { tipo: "flor-anunciada", jugador: "a" },
+    { tipo: "fase-flor-cerrada" },
+    { tipo: "flor-adjudicada", adjudicaciones: flor.estado.flor.adjudicaciones },
+  ]);
+  assert.deepEqual(flor.estado.flor.adjudicaciones, [
+    { equipo: "A", puntos: 3, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 0, motivo: "sin-desafio" },
+  ]);
   const truco = ejecutarAccionCoordinada(flor.estado, { tipo: "proponer-truco", jugador: "a" });
   const quieroTruco = ejecutarAccionCoordinada(truco.estado, {
     tipo: "quiero-truco",
@@ -2410,7 +2653,6 @@ test("liquidación por mazo conserva Flor ordinaria con Vale Cuatro aceptado", (
     { equipo: "B", puntos: 0, motivo: "sin-desafio" },
   ]);
   assert.deepEqual(liquidado.eventos, [
-    { tipo: "flor-adjudicada", adjudicaciones: liquidado.estado.flor.adjudicaciones },
     {
       tipo: "mazo-adjudicado",
       jugadorRetirado: "a",
@@ -3092,6 +3334,11 @@ test("Flor ordinaria del proponente retirado se conserva al cancelar Truco pendi
   ).estado;
   const flor = ejecutarAccionCoordinada(estado, { tipo: "anunciar-flor", jugador: "a" });
   assert.equal(flor.aceptada, true);
+  assert.deepEqual(flor.eventos, [
+    { tipo: "flor-anunciada", jugador: "a" },
+    { tipo: "fase-flor-cerrada" },
+    { tipo: "flor-adjudicada", adjudicaciones: flor.estado.flor.adjudicaciones },
+  ]);
   assert.equal(flor.estado.flor.pendiente, null);
   const propuesta = ejecutarAccionCoordinada(flor.estado, { tipo: "proponer-truco", jugador: "a" });
   const mazo = ejecutarAccionCoordinada(propuesta.estado, { tipo: "irse-al-mazo", jugador: "a" });
@@ -3119,14 +3366,13 @@ test("Flor ordinaria del proponente retirado se conserva al cancelar Truco pendi
     nivelAceptado: null,
   });
   assert.deepEqual(liquidado.eventos, [
-    { tipo: "flor-adjudicada", adjudicaciones: liquidado.estado.flor.adjudicaciones },
     {
       tipo: "mazo-adjudicado",
       jugadorRetirado: "a",
       adjudicacion: { equipo: "B", puntos: 1, motivo: "mazo", nivel: null },
     },
   ]);
-  assert.equal(liquidado.eventos.filter((evento) => evento.tipo === "flor-adjudicada").length, 1);
+  assert.equal(liquidado.eventos.filter((evento) => evento.tipo === "flor-adjudicada").length, 0);
   assert.equal(liquidado.eventos.filter((evento) => evento.tipo === "mazo-adjudicado").length, 1);
   const cierre = ejecutarAccionCoordinada(liquidado.estado, { tipo: "cerrar-mano-mazo" });
   assert.equal(cierre.aceptada, true);

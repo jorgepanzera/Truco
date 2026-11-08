@@ -23,3 +23,7 @@ coverage/
 *.temp
 .DS_Store
 Thumbs.db
+
+.agents/skills/
+.claude/skills/
+.windsurf/skills/

@@ -53,11 +53,13 @@ export function instalarWebSocket(
       if (!conexion.sesion) socket.close(1008, "authentication required");
     }, 5000);
     socket.on("message", (datos, esBinario) => {
+      let tipoEntrada = "desconocido";
       try {
         const mensaje = parsear(datos, esBinario);
         if (!mensaje || typeof mensaje !== "object" || Array.isArray(mensaje))
           return error(socket, "protocolo-invalido", "Mensaje inválido.");
         const entrada = mensaje as Record<string, unknown>;
+        if (typeof entrada.type === "string") tipoEntrada = entrada.type;
         if (entrada.type === "auth") {
           if (conexion.sesion || typeof entrada.token !== "string")
             return error(socket, "autenticacion-invalida", "Autenticación inválida.");
@@ -121,7 +123,13 @@ export function instalarWebSocket(
       } catch (causa) {
         if (causa instanceof ErrorDeOperacion)
           error(socket, causa.detalle.codigo, causa.detalle.mensaje);
-        else error(socket, "error-interno", "No se pudo procesar el mensaje.");
+        else {
+          console.error("Error inesperado al procesar WebSocket", {
+            tipoAccion: tipoEntrada,
+            error: causa instanceof Error ? causa.message : String(causa),
+          });
+          error(socket, "error-interno", "No se pudo procesar el mensaje.");
+        }
       }
     });
     socket.on("close", () => {

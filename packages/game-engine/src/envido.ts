@@ -53,7 +53,12 @@ export type EventoEnvido =
   | Readonly<{ tipo: "envido-iniciado"; cadena: CadenaEnvidoPendiente }>
   | Readonly<{ tipo: "envido-aumentado"; cadena: CadenaEnvidoPendiente }>
   | Readonly<{
-      tipo: "envido-aceptado" | "envido-rechazado" | "envido-rechazo-implicito-por-retiro";
+      tipo: "envido-aceptado";
+      adjudicacion: AdjudicacionEnvido;
+      tantos: ResultadoComparacionEnvido["tantos"];
+    }>
+  | Readonly<{
+      tipo: "envido-rechazado" | "envido-rechazo-implicito-por-retiro";
       adjudicacion: AdjudicacionEnvido;
     }>
   | Readonly<{ tipo: "envido-cancelado-por-flor"; cancelacion: CancelacionEnvidoPorFlor }>
@@ -68,6 +73,8 @@ export type ContextoEnvido = Readonly<{
   jugadorTurno: string | null;
   bazasCompletadas: number;
   finalizada: boolean;
+  /** §6.1 v1.7: el respondedor de Truco pendiente puede abrir el primer Envido fuera de turno. */
+  puedeIniciarFueraDeTurnoPorTrucoPendiente?: boolean;
   /** Participantes que aún pueden cantar o comparar. Si se omite, todos siguen activos. */
   jugadoresActivos?: readonly string[];
   falta?: Readonly<{
@@ -410,7 +417,11 @@ export function iniciarEnvido(
   if (!estado || estado.iniciado || estado.pendiente) return fallo("cadena-duplicada");
   const participante = contexto.mesa.jugadores.find((p) => p.id === jugador);
   if (!participante || !estaActivo(contexto, jugador)) return fallo("jugador-inactivo");
-  if (contexto.finalizada || contexto.bazasCompletadas !== 0 || contexto.jugadorTurno !== jugador)
+  if (
+    contexto.finalizada ||
+    contexto.bazasCompletadas !== 0 ||
+    (contexto.jugadorTurno !== jugador && !contexto.puedeIniciarFueraDeTurnoPorTrucoPendiente)
+  )
     return fallo("momento-invalido");
   return {
     aceptada: true,
@@ -525,7 +536,7 @@ export function responderQuiero(
   return {
     aceptada: true,
     estado: { ...estado, pendiente: null, resueltos: [...estado.resueltos, resultado] },
-    eventos: [{ tipo: "envido-aceptado", adjudicacion: resultado }],
+    eventos: [{ tipo: "envido-aceptado", adjudicacion: resultado, tantos: comparacion.tantos }],
   };
 }
 

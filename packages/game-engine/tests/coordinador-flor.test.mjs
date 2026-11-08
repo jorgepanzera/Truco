@@ -1,17 +1,114 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  contabilizarManoCerrada,
+  crearEstadoPartida,
   crearEstadoManoCoordinada,
   crearMazo,
+  ejecutarAccionPartida,
   ejecutarAccionCoordinada,
   iniciarJuegoCartas,
   iniciarEnvido,
+  obtenerAccionesLegalesJugador,
   obtenerContextoEnvido,
   obtenerContextoFlor,
   prepararMano,
+  tieneFlor,
 } from "../dist/index.js";
 
 const c = (palo, valor) => ({ palo, valor });
+function baseFlorUnilateral(repartidor, jugadorConFlor) {
+  const manos = {
+    a: [c("espada", 1), c("espada", 3), c("espada", 7)],
+    b: [c("copa", 4), c("oro", 6), c("basto", 6)],
+  };
+  if (jugadorConFlor === "b") [manos.a, manos.b] = [manos.b, manos.a];
+  const orden = repartidor === "a" ? ["b", "a"] : ["a", "b"];
+  const primeras = [
+    manos[orden[0]][0],
+    manos[orden[1]][0],
+    manos[orden[0]][1],
+    manos[orden[1]][1],
+    manos[orden[0]][2],
+    manos[orden[1]][2],
+    c("oro", 2),
+  ];
+  const mazo = [
+    ...primeras,
+    ...crearMazo().filter(
+      (carta) => !primeras.some((otra) => otra.palo === carta.palo && otra.valor === carta.valor),
+    ),
+  ];
+  const mano = prepararMano(
+    {
+      modalidad: "1v1",
+      jugadores: [
+        { id: "a", equipo: "A", posicion: 0 },
+        { id: "b", equipo: "B", posicion: 1 },
+      ],
+    },
+    repartidor,
+    mazo,
+  );
+  return {
+    mano,
+    estado: crearEstadoManoCoordinada(iniciarJuegoCartas(mano), {
+      metaPuntos: 40,
+      puntajesIniciales: { A: 0, B: 0 },
+      esDesempate: false,
+    }),
+  };
+}
+function baseSinFlores(repartidor = "b") {
+  const manos = {
+    a: [c("espada", 1), c("basto", 3), c("oro", 7)],
+    b: [c("copa", 4), c("oro", 6), c("basto", 6)],
+  };
+  const orden = repartidor === "a" ? ["b", "a"] : ["a", "b"];
+  const primeras = [
+    manos[orden[0]][0],
+    manos[orden[1]][0],
+    manos[orden[0]][1],
+    manos[orden[1]][1],
+    manos[orden[0]][2],
+    manos[orden[1]][2],
+    c("oro", 2),
+  ];
+  const mazo = [
+    ...primeras,
+    ...crearMazo().filter(
+      (carta) => !primeras.some((otra) => otra.palo === carta.palo && otra.valor === carta.valor),
+    ),
+  ];
+  const mano = prepararMano(
+    {
+      modalidad: "1v1",
+      jugadores: [
+        { id: "a", equipo: "A", posicion: 0 },
+        { id: "b", equipo: "B", posicion: 1 },
+      ],
+    },
+    repartidor,
+    mazo,
+  );
+  return crearEstadoPartida(
+    crearEstadoManoCoordinada(iniciarJuegoCartas(mano), {
+      metaPuntos: 40,
+      puntajesIniciales: { A: 0, B: 0 },
+      esDesempate: false,
+    }),
+  );
+}
+function ejecutarAccionPartidaValida(partida, accion) {
+  const resultado = ejecutarAccionPartida(partida, accion);
+  assert.equal(resultado.aceptada, true);
+  return resultado.estado;
+}
+function jugarPrimeraDisponible(partida, jugador) {
+  const carta = partida.mano.juego.cartasDisponibles.find((mano) => mano.jugador === jugador)
+    .cartas[0];
+  return ejecutarAccionPartidaValida(partida, { tipo: "jugar-carta", jugador, carta });
+}
 function baseFlor(
   contextoInicio = { metaPuntos: 40, puntajesIniciales: { A: 0, B: 0 }, esDesempate: false },
 ) {
@@ -112,6 +209,165 @@ test("coordinador inicializa Flor desde cartas canónicas y anuncia con priorida
   const b = ejecutarAccionCoordinada(a.estado, { tipo: "anunciar-flor", jugador: "b" });
   assert.equal(b.aceptada, true);
   assert.equal(b.estado.flor.anuncios[1].jugador, "b");
+});
+
+test("Flor unilateral adjudicada bloquea toda cadena posterior de Envido", () => {
+  const { estado } = baseFlorUnilateral("b", "a");
+  const partida = crearEstadoPartida(estado);
+  const flor = ejecutarAccionPartida(partida, { tipo: "anunciar-flor", jugador: "a" });
+  assert.equal(flor.aceptada, true);
+  assert.deepEqual(flor.estado.mano.flor.adjudicaciones, [
+    { equipo: "A", puntos: 3, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 0, motivo: "sin-desafio" },
+  ]);
+  const legales = obtenerAccionesLegalesJugador(flor.estado, "a");
+  assert.equal(legales.some((accion) => accion.tipo === "iniciar-envido"), false);
+  const antesDeIntentos = JSON.stringify(flor.estado);
+  for (const canto of ["envido", "real-envido", "falta-envido"]) {
+    const intento = ejecutarAccionPartida(flor.estado, {
+      tipo: "iniciar-envido",
+      jugador: "a",
+      canto,
+    });
+    assert.equal(intento.aceptada, false, canto);
+    assert.equal(intento.rechazo.codigo, "flor-ya-anunciada", canto);
+    assert.equal(JSON.stringify(flor.estado), antesDeIntentos, canto);
+  }
+});
+
+test("Flor rival adjudicada bloquea Envido aun al responder Truco pendiente", () => {
+  const { estado } = baseFlorUnilateral("b", "b");
+  let partida = crearEstadoPartida(estado);
+  partida = jugarPrimeraDisponible(partida, "a");
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "anunciar-flor", jugador: "b" });
+  assert.deepEqual(partida.mano.flor.adjudicaciones, [
+    { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+  ]);
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "proponer-truco", jugador: "b" });
+  const trucoAntes = partida.mano.truco;
+  const turnoAntes = partida.mano.juego.jugadorTurno;
+  const legales = obtenerAccionesLegalesJugador(partida, "a");
+  assert.equal(legales.some((accion) => accion.tipo === "iniciar-envido"), false);
+  assert.ok(legales.some((accion) => accion.tipo === "quiero-truco"));
+  assert.ok(legales.some((accion) => accion.tipo === "no-quiero-truco"));
+  assert.ok(legales.some((accion) => accion.tipo === "proponer-retruco"));
+  const antesDeIntentos = JSON.stringify(partida);
+  for (const canto of ["envido", "real-envido", "falta-envido"]) {
+    const intento = ejecutarAccionPartida(partida, {
+      tipo: "iniciar-envido",
+      jugador: "a",
+      canto,
+    });
+    assert.equal(intento.aceptada, false, canto);
+    assert.equal(intento.rechazo.codigo, "flor-ya-anunciada", canto);
+    assert.equal(JSON.stringify(partida), antesDeIntentos, canto);
+    assert.deepEqual(partida.mano.truco, trucoAntes, canto);
+    assert.equal(partida.mano.juego.jugadorTurno, turnoAntes, canto);
+  }
+});
+
+test("Flor no anunciada del rival no bloquea globalmente un Envido legal", () => {
+  const { estado } = baseFlorUnilateral("b", "b");
+  const partida = crearEstadoPartida(estado);
+  const envido = ejecutarAccionPartida(partida, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  assert.equal(envido.aceptada, true);
+  assert.equal(envido.estado.mano.envido.pendiente?.proponente, "a");
+});
+
+test("Flor responde Envido, Real Envido y Falta Envido sin cambiar el turno", () => {
+  for (const canto of ["envido", "real-envido", "falta-envido"]) {
+    const { estado } = baseFlorUnilateral("b", "b");
+    let partida = crearEstadoPartida(estado);
+    partida = ejecutarAccionPartidaValida(partida, {
+      tipo: "iniciar-envido",
+      jugador: "a",
+      canto,
+    });
+    assert.equal(partida.mano.envido.pendiente?.equipoRespondedor, "B", canto);
+    const turnoAntes = partida.mano.juego.jugadorTurno;
+    assert.ok(
+      obtenerAccionesLegalesJugador(partida, "b").some((accion) => accion.tipo === "anunciar-flor"),
+      canto,
+    );
+    const flor = ejecutarAccionPartida(partida, { tipo: "anunciar-flor", jugador: "b" });
+    assert.equal(flor.aceptada, true, canto);
+    assert.equal(flor.estado.mano.juego.jugadorTurno, turnoAntes, canto);
+    assert.equal(flor.estado.mano.envido.pendiente, null, canto);
+    assert.equal(flor.estado.mano.envido.resueltos.length, 0, canto);
+    assert.equal(flor.estado.mano.envido.cancelacionPorFlor?.causa, "cancelado-por-flor", canto);
+    assert.deepEqual(flor.estado.mano.flor.adjudicaciones, [
+      { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+      { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+    ]);
+    assert.ok(flor.eventos.some((evento) => evento.tipo === "flor-anunciada"), canto);
+    assert.ok(flor.eventos.some((evento) => evento.tipo === "envido-cancelado-por-flor"), canto);
+    partida = flor.estado;
+  }
+});
+
+test("Flor ante Envido pendiente no restituye derechos ni habilita al proponente", () => {
+  const { estado } = baseFlorUnilateral("a", "b");
+  let partida = crearEstadoPartida(estado);
+  partida = jugarPrimeraDisponible(partida, "b");
+  partida = ejecutarAccionPartidaValida(partida, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const antes = JSON.stringify(partida);
+  const perdida = ejecutarAccionPartida(partida, { tipo: "anunciar-flor", jugador: "b" });
+  assert.equal(perdida.aceptada, false);
+  assert.equal(perdida.rechazo.codigo, "derecho-perdido");
+  assert.equal(JSON.stringify(partida), antes);
+  const proponente = ejecutarAccionPartida(partida, { tipo: "anunciar-flor", jugador: "a" });
+  assert.equal(proponente.aceptada, false);
+  assert.equal(proponente.rechazo.codigo, "flor-envido-respondedor-invalido");
+  assert.equal(JSON.stringify(partida), antes);
+});
+
+test("Flor ante Envido pendiente exige Flor y no habilita anuncio ordinario fuera de turno", () => {
+  let sinFlor = baseSinFlores();
+  sinFlor = ejecutarAccionPartidaValida(sinFlor, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const antesSinFlor = JSON.stringify(sinFlor);
+  const inexistente = ejecutarAccionPartida(sinFlor, { tipo: "anunciar-flor", jugador: "b" });
+  assert.equal(inexistente.aceptada, false);
+  assert.equal(inexistente.rechazo.codigo, "flor-inexistente");
+  assert.equal(JSON.stringify(sinFlor), antesSinFlor);
+
+  const { estado } = baseFlorUnilateral("b", "b");
+  const fueraDeTurno = ejecutarAccionPartida(crearEstadoPartida(estado), {
+    tipo: "anunciar-flor",
+    jugador: "b",
+  });
+  assert.equal(fueraDeTurno.aceptada, false);
+  assert.equal(fueraDeTurno.rechazo.codigo, "primer-anuncio-fuera-de-turno");
+});
+
+test("un retirado no puede anunciar Flor ante Envido pendiente de su equipo", () => {
+  const { estado } = baseFlorDosVsDos();
+  const pendiente = iniciarEnvido(
+    estado.envido,
+    obtenerContextoEnvido(estado.juego, estado.contextoInicio),
+    "a",
+    "envido",
+  );
+  assert.equal(pendiente.aceptada, true);
+  const partida = crearEstadoPartida({ ...estado, envido: pendiente.estado });
+  const retiro = ejecutarAccionPartida(partida, { tipo: "irse-al-mazo", jugador: "b" });
+  assert.equal(retiro.aceptada, true);
+  assert.ok(retiro.estado.mano.envido.pendiente);
+  const intento = ejecutarAccionPartida(retiro.estado, { tipo: "anunciar-flor", jugador: "b" });
+  assert.equal(intento.aceptada, false);
+  assert.equal(intento.rechazo.codigo, "flor-envido-respondedor-invalido");
 });
 
 test("primera carta renuncia a Flor atómicamente y una carta inválida no altera Flor", () => {
@@ -256,6 +512,12 @@ test("la siguiente carta válida confirma Flor sin desafío una sola vez e impid
   const { mano, estado } = baseFlor();
   const a = ejecutarAccionCoordinada(estado, { tipo: "anunciar-flor", jugador: "a" });
   const b = ejecutarAccionCoordinada(a.estado, { tipo: "anunciar-flor", jugador: "b" });
+  assert.equal(b.estado.flor.cerrado, false);
+  assert.deepEqual(b.estado.flor.adjudicaciones, []);
+  assert.equal(
+    ejecutarAccionCoordinada(b.estado, { tipo: "proponer-contra-flor", jugador: "a" }).aceptada,
+    true,
+  );
   const antes = JSON.stringify(b.estado);
   const invalida = ejecutarAccionCoordinada(b.estado, {
     tipo: "jugar-carta",
@@ -279,6 +541,63 @@ test("la siguiente carta válida confirma Flor sin desafío una sola vez e impid
     ejecutarAccionCoordinada(r.estado, { tipo: "proponer-contra-flor", jugador: "a" }).aceptada,
     false,
   );
+});
+
+test("Flor propia sin desafio se liquida antes de rechazar Truco rival", () => {
+  const { estado } = baseFlorUnilateral("b", "a");
+  let partida = crearEstadoPartida(estado);
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "anunciar-flor", jugador: "a" });
+  assert.deepEqual(partida.mano.flor.adjudicaciones, [
+    { equipo: "A", puntos: 3, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 0, motivo: "sin-desafio" },
+  ]);
+  partida = jugarPrimeraDisponible(partida, "a");
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "proponer-truco", jugador: "b" });
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "no-quiero-truco", jugador: "a" });
+  const contabilizada = contabilizarManoCerrada(partida);
+  assert.equal(contabilizada.aceptada, true);
+  assert.deepEqual(contabilizada.estado.manosContabilizadas[0].puntos, { A: 3, B: 1 });
+});
+
+test("Con Flor Quiero liquida Flor una vez y conserva Truco ganado por bazas", () => {
+  const { estado } = baseFlorUnilateral("a", "a");
+  let partida = crearEstadoPartida(estado);
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "proponer-truco", jugador: "b" });
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "con-flor-quiero", jugador: "a" });
+  assert.deepEqual(partida.mano.flor.adjudicaciones, [
+    { equipo: "A", puntos: 3, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 0, motivo: "sin-desafio" },
+  ]);
+  partida = jugarPrimeraDisponible(partida, "b");
+  partida = jugarPrimeraDisponible(partida, "a");
+  partida = jugarPrimeraDisponible(partida, "a");
+  partida = jugarPrimeraDisponible(partida, "b");
+  assert.deepEqual(partida.mano.adjudicacionTruco, {
+    causa: "mano-por-bazas",
+    equipo: "A",
+    puntos: 2,
+    nivelAceptado: "truco",
+  });
+  const contabilizada = contabilizarManoCerrada(partida);
+  assert.equal(contabilizada.aceptada, true);
+  assert.deepEqual(contabilizada.estado.manosContabilizadas[0].puntos, { A: 5, B: 0 });
+  assert.equal(contabilizarManoCerrada(contabilizada.estado).aceptada, false);
+});
+
+test("Flor de la maquina se liquida junto al Truco que el humano rechaza", () => {
+  const { estado } = baseFlorUnilateral("a", "b");
+  const cartasJorge = estado.juego.mano.manos.find((mano) => mano.jugador === "a")?.cartas;
+  assert.ok(cartasJorge);
+  assert.equal(tieneFlor(cartasJorge, estado.juego.mano.muestra), false);
+  let partida = crearEstadoPartida(estado);
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "anunciar-flor", jugador: "b" });
+  assert.equal(partida.mano.flor.cerrado, true);
+  assert.equal(partida.mano.flor.pendiente, null);
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "proponer-truco", jugador: "b" });
+  partida = ejecutarAccionPartidaValida(partida, { tipo: "no-quiero-truco", jugador: "a" });
+  const contabilizada = contabilizarManoCerrada(partida);
+  assert.equal(contabilizada.aceptada, true);
+  assert.deepEqual(contabilizada.estado.manosContabilizadas[0].puntos, { A: 0, B: 4 });
 });
 
 test("2v2 conserva derechos restantes tras consumir la oportunidad sin cerrar Flor", () => {
@@ -446,14 +765,14 @@ test("Flor cancela Envido pendiente sin puntos y no permite reabrirlo", () => {
   assert.equal(pendiente.aceptada, true);
   const preparado = { ...estado, envido: pendiente.estado };
   const antes = JSON.stringify(preparado);
-  const flor = ejecutarAccionCoordinada(preparado, { tipo: "anunciar-flor", jugador: "a" });
+  const flor = ejecutarAccionCoordinada(preparado, { tipo: "anunciar-flor", jugador: "b" });
   assert.equal(flor.aceptada, true);
   assert.equal(flor.estado.envido.pendiente, null);
   assert.deepEqual(flor.estado.envido.resueltos, []);
   assert.deepEqual(flor.estado.envido.cancelacionPorFlor, {
     causa: "cancelado-por-flor",
-    jugadorFlor: "a",
-    equipoFlor: "A",
+    jugadorFlor: "b",
+    equipoFlor: "B",
     historial: pendiente.estado.pendiente.cantos,
   });
   assert.equal(flor.eventos.at(-1).tipo, "envido-cancelado-por-flor");
@@ -466,15 +785,15 @@ test("Flor cancela Envido pendiente sin puntos y no permite reabrirlo", () => {
         ...flor.estado.envido,
         cancelacionPorFlor: {
           ...flor.estado.envido.cancelacionPorFlor,
-          jugadorFlor: "b",
-          equipoFlor: "B",
+          jugadorFlor: "a",
+          equipoFlor: "A",
         },
       },
     },
   ]) {
     const antesAdulterado = JSON.stringify(estadoAdulterado);
     assert.equal(
-      ejecutarAccionCoordinada(estadoAdulterado, { tipo: "anunciar-flor", jugador: "a" }).rechazo
+      ejecutarAccionCoordinada(estadoAdulterado, { tipo: "anunciar-flor", jugador: "b" }).rechazo
         .codigo,
       "estado-invalido",
     );

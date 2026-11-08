@@ -3,6 +3,7 @@ import type { CantoEnvido } from "@truco/game-engine";
 import type { Carta } from "@truco/shared";
 
 export type AccionRed =
+  | Readonly<{ type: "continue-hand"; handId: string }>
   | Readonly<{ type: "play-card"; card: unknown }>
   | Readonly<{ type: "envido" | "raise-envido"; canto: unknown }>
   | Readonly<{
@@ -31,7 +32,8 @@ export type AccionRed =
 
 export function esAccionRed(valor: unknown): valor is AccionRed {
   if (!valor || typeof valor !== "object" || Array.isArray(valor)) return false;
-  const accion = valor as { type?: unknown; card?: unknown; canto?: unknown };
+  const accion = valor as { type?: unknown; card?: unknown; canto?: unknown; handId?: unknown };
+  if (accion.type === "continue-hand") return typeof accion.handId === "string";
   if (accion.type === "play-card") return esCarta(accion.card);
   if (accion.type === "envido" || accion.type === "raise-envido")
     return (
@@ -64,6 +66,8 @@ export function esAccionRed(valor: unknown): valor is AccionRed {
 /** Traduce intención de red; nunca acepta un jugador ni estado provistos por el cliente. */
 export function aAccionCoordinada(accion: AccionRed, jugador: string): AccionCoordinada {
   switch (accion.type) {
+    case "continue-hand":
+      throw new TypeError("La continuación de mano pertenece al repositorio de partidas.");
     case "play-card":
       return { tipo: "jugar-carta", jugador, carta: accion.card as Carta };
     case "envido":

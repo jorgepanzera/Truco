@@ -11,10 +11,12 @@ import {
   contabilizarManoCerrada,
   siguienteMano,
   ejecutarDecisionAutomatica,
+  obtenerAccionesLegalesJugador,
   politicaEstrategicaGlobal,
   type PoliticaEstrategica,
   type EstadoPartida,
   type Mesa,
+  type AccionAutomatica,
 } from "@truco/game-engine";
 import type { Carta, MetaPuntos } from "@truco/shared";
 import { aAccionCoordinada, type AccionRed } from "./game-actions.js";
@@ -41,8 +43,55 @@ type PartidaInterna = {
     equipo: string;
     puntos: number;
     causa: string;
+    bazas: readonly Readonly<{
+      jugadas: readonly Readonly<{ jugador: string; carta: Carta }>[];
+      equipoGanador: string | null;
+    }>[];
   } | null;
+  eventosPublicos: EventoPublicoInterno[];
+  siguienteSecuenciaEvento: number;
+  esperaContinuacion: { idMano: string; requeridos: Set<string>; confirmados: Set<string> } | null;
 };
+
+type AdjudicacionPublicaInterna = Readonly<{
+  equipo: string;
+  puntos: number;
+  causa?: string;
+}>;
+type EventoPublicoInterno = Readonly<{
+  secuencia: number;
+  idMano: string;
+  tipo: string;
+  jugador?: string;
+  canto?: string;
+  equipoGanador?: string;
+  adjudicaciones?: readonly AdjudicacionPublicaInterna[];
+  tantos?: readonly Readonly<{ jugador: string; tanto: number }>[];
+  marcadorCierre?: readonly Readonly<{ equipo: string; puntos: number }>[];
+}>;
+export type EventoPublico = Readonly<{
+  secuencia: number;
+  idMano: string;
+  tipo: string;
+  asiento?: number;
+  canto?: string;
+  asientoGanador?: number;
+  adjudicaciones?: readonly Readonly<{ asientoGanador: number; puntos: number; causa?: string }>[];
+  tantos?: readonly Readonly<{ asiento: number; tanto: number }>[];
+  marcadorCierre?: readonly Readonly<{ asiento: number; puntos: number }>[];
+}>;
+
+function puntosAdjudicadosEnMano(estado: EstadoPartida): Readonly<Record<string, number>> {
+  const equipos = estado.mano.juego.mano.equipos;
+  const puntos = Object.fromEntries(equipos.map((equipo) => [equipo, 0])) as Record<string, number>;
+  for (const adjudicacion of estado.mano.flor.adjudicaciones)
+    puntos[adjudicacion.equipo] += adjudicacion.puntos;
+  for (const adjudicacion of estado.mano.envido.resueltos)
+    puntos[adjudicacion.equipo] += adjudicacion.puntos;
+  if (estado.mano.adjudicacionTruco)
+    puntos[estado.mano.adjudicacionTruco.equipo] += estado.mano.adjudicacionTruco.puntos;
+  return puntos;
+}
 
 export type SolicitudAccion = Readonly<{
   actionId: string;
@@ -82,19 +131,31 @@ export type SnapshotEspera = Readonly<{
   participantes: readonly Readonly<{ asiento: number; apodo: string; automatico?: boolean }>[];
 }>;
 
+export type SnapshotJugadaPublica = Readonly<{ asiento: number; carta: Carta }>;
+export type SnapshotBazaPublica = Readonly<{
+  jugadas: readonly SnapshotJugadaPublica[];
+  asientoGanador: number | null;
+}>;
+
 export type SnapshotIniciado = Readonly<{
   estado: "iniciada";
   matchId: string;
   modalidad: "1v1";
   metaPuntos: MetaPuntos;
   version: number;
+  idMano: string;
   asientoPropio: number;
   participantes: readonly Readonly<{ asiento: number; apodo: string; automatico?: boolean }>[];
   marcador: readonly Readonly<{ asiento: number; puntos: number }>[];
+  resultadoPartida: Readonly<{ asientoGanador: number }> | null;
   repartidor: number;
   muestra: Carta;
   cartasPropias: readonly Carta[];
-  cartasJugadas: readonly Readonly<{ asiento: number; carta: Carta }>[];
+  cartasRivalesRestantes: number;
+  accionesDisponibles: readonly AccionRed[];
+  eventosPublicos: readonly EventoPublico[];
+  bazasCompletadas: readonly SnapshotBazaPublica[];
+  bazaActual: SnapshotBazaPublica;
   turno: number | null;
   desafiosPendientes: Readonly<{
     envido: Readonly<{ proponente: number; respondedor: number; valor: number }> | null;
@@ -105,10 +166,13 @@ export type SnapshotIniciado = Readonly<{
   ultimoCierre: Readonly<{
     idMano: string;
     version: number;
+    asientoGanador: number;
     equipo: string;
     puntos: number;
     causa: string;
+    bazas: readonly SnapshotBazaPublica[];
   }> | null;
+  continuacion: Readonly<{ idMano: string; confirmadaPropia: boolean; faltantes: number }> | null;
 }>;
 
 export type SnapshotPartida = SnapshotEspera | SnapshotIniciado;
@@ -128,17 +192,160 @@ function enteroAleatorio(fuente: FuenteAleatoria, maximo: number): number {
   return valor;
 }
 
-function cartasJugadas(
-  estado: EstadoPartida,
+function proyectarBaza(
+  jugadas: readonly Readonly<{ jugador: string; carta: Carta }>[],
   asientoDe: (jugador: string) => number,
-): SnapshotIniciado["cartasJugadas"] {
-  const bazas = [...estado.mano.juego.bazasCompletadas, estado.mano.juego.bazaActual];
-  return bazas.flatMap((baza) =>
-    baza.jugadas.map((jugada) => ({
+  equipoGanador: string | null = null,
+  asientoDelEquipo?: (equipo: string) => number,
+): SnapshotBazaPublica {
+  return {
+    jugadas: jugadas.map((jugada) => ({
       asiento: asientoDe(jugada.jugador),
       carta: { ...jugada.carta },
     })),
-  );
+    asientoGanador: equipoGanador === null ? null : asientoDelEquipo!(equipoGanador),
+  };
+}
+
+function proyectarAccion(accion: AccionAutomatica): AccionRed {
+  switch (accion.tipo) {
+    case "jugar-carta":
+      return { type: "play-card", card: { ...accion.carta } };
+    case "anunciar-flor":
+      return { type: "announce-flor" };
+    case "proponer-contra-flor":
+      return { type: "contra-flor" };
+    case "proponer-contra-flor-al-resto":
+      return { type: "contra-flor-al-resto" };
+    case "quiero-contra-flor":
+      return { type: "accept-contra-flor" };
+    case "no-quiero-contra-flor":
+      return { type: "reject-contra-flor" };
+    case "quiero-contra-flor-al-resto":
+      return { type: "accept-contra-flor-al-resto" };
+    case "no-quiero-contra-flor-al-resto":
+      return { type: "reject-contra-flor-al-resto" };
+    case "iniciar-envido":
+      return { type: "envido", canto: accion.canto };
+    case "aumentar-envido":
+      return { type: "raise-envido", canto: accion.canto };
+    case "quiero-envido":
+      return { type: "accept-envido" };
+    case "no-quiero-envido":
+      return { type: "reject-envido" };
+    case "con-flor-quiero":
+      return { type: "con-flor-quiero" };
+    case "irse-al-mazo":
+      return { type: "go-to-mazo" };
+    case "proponer-truco":
+      return { type: "truco" };
+    case "quiero-truco":
+      return { type: "accept-truco" };
+    case "no-quiero-truco":
+      return { type: "reject-truco" };
+    case "proponer-retruco":
+      return { type: "retruco" };
+    case "quiero-retruco":
+      return { type: "accept-retruco" };
+    case "no-quiero-retruco":
+      return { type: "reject-retruco" };
+    case "proponer-vale-cuatro":
+      return { type: "vale-cuatro" };
+    case "quiero-vale-cuatro":
+      return { type: "accept-vale-cuatro" };
+    case "no-quiero-vale-cuatro":
+      return { type: "reject-vale-cuatro" };
+  }
+}
+
+function esRegistro(valor: unknown): valor is Record<string, unknown> {
+  return typeof valor === "object" && valor !== null;
+}
+
+function texto(valor: unknown): string | undefined {
+  return typeof valor === "string" ? valor : undefined;
+}
+
+function proyectarAdjudicaciones(
+  valor: unknown,
+): readonly AdjudicacionPublicaInterna[] | undefined {
+  const entradas = Array.isArray(valor) ? valor : valor === undefined ? [] : [valor];
+  const adjudicaciones = entradas.flatMap((entrada) => {
+    if (!esRegistro(entrada)) return [];
+    const equipo = texto(entrada.equipo);
+    const puntos = entrada.puntos;
+    if (!equipo || typeof puntos !== "number") return [];
+    const causa = texto(entrada.motivo) ?? texto(entrada.causa);
+    return [{ equipo, puntos, ...(causa ? { causa } : {}) }];
+  });
+  return adjudicaciones.length ? adjudicaciones : undefined;
+}
+
+/**
+ * Reduce los eventos canónicos a datos que cualquier asiento puede conocer.
+ * No transporta cartas de manos, tantos, evaluaciones ni decisiones internas.
+ */
+export function proyectarEventoPublico(
+  evento: unknown,
+): Omit<EventoPublicoInterno, "secuencia" | "idMano"> | null {
+  if (!esRegistro(evento)) return null;
+  const tipo = texto(evento.tipo);
+  if (!tipo) return null;
+  if (!(
+    tipo === "carta-jugada" ||
+    tipo === "baza-resuelta" ||
+    tipo === "jugador-retirado" ||
+    tipo.startsWith("mano-decidida-") ||
+    tipo.startsWith("envido-") ||
+    tipo.startsWith("truco-") ||
+    tipo.startsWith("flor-") ||
+    tipo.startsWith("contra-flor-") ||
+    tipo === "mazo-adjudicado" ||
+    tipo === "partida-terminada-contra-flor-al-resto"
+  ))
+    return null;
+
+  const jugada = esRegistro(evento.jugada) ? evento.jugada : undefined;
+  const propuesta = esRegistro(evento.propuesta) ? evento.propuesta : undefined;
+  const cadena = esRegistro(evento.cadena) ? evento.cadena : undefined;
+  const ultimoCanto = Array.isArray(cadena?.cantos) ? cadena.cantos.at(-1) : undefined;
+  const canto = esRegistro(ultimoCanto) ? texto(ultimoCanto.canto) : undefined;
+  const jugador =
+    texto(evento.jugador) ??
+    texto(evento.respondedor) ??
+    texto(evento.jugadorRetirado) ??
+    texto(jugada?.jugador) ??
+    texto(propuesta?.proponente) ??
+    texto(cadena?.proponente);
+  const adjudicaciones =
+    proyectarAdjudicaciones(evento.adjudicacion) ?? proyectarAdjudicaciones(evento.adjudicaciones);
+  // El motor conserva el cierre técnico de la fase aun cuando no hubo ningún
+  // anuncio de Flor. Sus importes cero no constituyen una adjudicación pública.
+  if (tipo === "flor-adjudicada" && (!adjudicaciones || adjudicaciones.every(({ puntos }) => puntos === 0)))
+    return null;
+  const equipoGanador =
+    texto(evento.equipoGanador) ??
+    texto(evento.equipo) ??
+    adjudicaciones?.find(({ puntos }) => puntos > 0)?.equipo ??
+    adjudicaciones?.[0]?.equipo;
+  return {
+    tipo,
+    ...(jugador ? { jugador } : {}),
+    ...(canto ? { canto } : {}),
+    ...(equipoGanador ? { equipoGanador } : {}),
+    ...(adjudicaciones ? { adjudicaciones } : {}),
+    ...(Array.isArray(evento.tantos)
+      ? {
+          tantos: evento.tantos.flatMap((tanto) =>
+            esRegistro(tanto) &&
+            typeof tanto.jugador === "string" &&
+            typeof tanto.tanto === "number"
+              ? [{ jugador: tanto.jugador, tanto: tanto.tanto }]
+              : [],
+          ),
+        }
+      : {}),
+  };
 }
 
 /** Estado efímero de 6A, aislado para poder sustituirlo por persistencia transaccional en 6D. */
@@ -191,6 +398,9 @@ export class RepositorioPartidasEnMemoria {
       acciones: new Map(),
       metricas: { cartas: 0, bazas: 0, manos: 0, puntos: 0 },
       ultimoCierre: null,
+      eventosPublicos: [],
+      siguienteSecuenciaEvento: 1,
+      esperaContinuacion: null,
     };
     this.#partidas.set(partida.id, partida);
     if (contraMaquina) this.iniciar(partida.id, creador);
@@ -224,6 +434,33 @@ export class RepositorioPartidasEnMemoria {
     let resultado: ResultadoAccion;
     if (solicitud.expectedVersion !== partida.version) {
       resultado = { huella, aceptada: false, version: partida.version, codigo: "version-obsoleta" };
+    } else if (solicitud.action.type === "continue-hand") {
+      const espera = partida.esperaContinuacion;
+      if (!espera || espera.idMano !== solicitud.action.handId || !espera.requeridos.has(sesion.id))
+        resultado = {
+          huella,
+          aceptada: false,
+          version: partida.version,
+          codigo: "continuacion-invalida",
+        };
+      else {
+        espera.confirmados.add(sesion.id);
+        if (espera.confirmados.size === espera.requeridos.size) {
+          const siguiente = siguienteMano(partida.canonico, this.#mazoAleatorio());
+          if (!siguiente.aceptada) throw new Error("No se pudo preparar la siguiente mano.");
+          partida.esperaContinuacion = null;
+          partida.canonico = this.#avanzarPartida(siguiente.estado, partida);
+        }
+        partida.version += 1;
+        resultado = { huella, aceptada: true, version: partida.version };
+      }
+    } else if (partida.esperaContinuacion) {
+      resultado = {
+        huella,
+        aceptada: false,
+        version: partida.version,
+        codigo: "esperando-continuacion",
+      };
     } else {
       const transicion = ejecutarAccionPartida(
         partida.canonico,
@@ -237,6 +474,7 @@ export class RepositorioPartidasEnMemoria {
           codigo: transicion.rechazo.codigo,
         };
       } else {
+        this.#registrarEventos(partida, partida.canonico, transicion.eventos);
         partida.canonico = this.#avanzarPartida(transicion.estado, partida);
         if (solicitud.action.type === "play-card") partida.metricas.cartas += 1;
         partida.version += 1;
@@ -322,27 +560,78 @@ export class RepositorioPartidasEnMemoria {
       (mano) => mano.jugador === sesion.id,
     );
     if (!manoPropia) throw new Error("El estado canónico no contiene la mano del jugador.");
+    const manoRival = estado.mano.juego.cartasDisponibles.find(
+      (mano) => mano.jugador !== sesion.id,
+    );
+    if (!manoRival) throw new Error("El estado canónico no contiene la mano rival.");
     const asientoDelEquipo = (equipo: string): number => {
       const jugador = estado.mesa.jugadores.find((item) => item.equipo === equipo);
       if (!jugador) throw new Error("El estado canónico contiene un equipo desconocido.");
       return jugador.posicion;
     };
+    const puntosEnCurso =
+      estado.fase === "mano-activa" || estado.fase === "mano-activa-2v2"
+        ? puntosAdjudicadosEnMano(estado)
+        : null;
     return {
       estado: "iniciada",
       matchId: partida.id,
       modalidad: partida.modalidad,
       metaPuntos: partida.metaPuntos,
       version: partida.version,
+      idMano: `mano-${estado.ordinalMano}`,
       asientoPropio,
       participantes,
       marcador: estado.mesa.jugadores.map((jugador) => ({
         asiento: jugador.posicion,
-        puntos: estado.puntajes[jugador.equipo],
+        puntos: estado.puntajes[jugador.equipo] + (puntosEnCurso?.[jugador.equipo] ?? 0),
       })),
+      resultadoPartida:
+        estado.fase === "partida-finalizada" && estado.equipoGanador
+          ? { asientoGanador: asientoDelEquipo(estado.equipoGanador) }
+          : null,
       repartidor: asientoDe(estado.mano.juego.mano.repartidor),
       muestra: { ...estado.mano.juego.mano.muestra },
       cartasPropias: manoPropia.cartas.map((carta) => ({ ...carta })),
-      cartasJugadas: cartasJugadas(estado, asientoDe),
+      cartasRivalesRestantes: manoRival.cartas.length,
+      accionesDisponibles: obtenerAccionesLegalesJugador(estado, sesion.id).map(proyectarAccion),
+      eventosPublicos: partida.eventosPublicos.map((evento) => ({
+        secuencia: evento.secuencia,
+        idMano: evento.idMano,
+        tipo: evento.tipo,
+        ...(evento.jugador ? { asiento: asientoDe(evento.jugador) } : {}),
+        ...(evento.canto ? { canto: evento.canto } : {}),
+        ...(evento.equipoGanador ? { asientoGanador: asientoDelEquipo(evento.equipoGanador) } : {}),
+        ...(evento.adjudicaciones
+          ? {
+              adjudicaciones: evento.adjudicaciones.map((adjudicacion) => ({
+                asientoGanador: asientoDelEquipo(adjudicacion.equipo),
+                puntos: adjudicacion.puntos,
+                ...(adjudicacion.causa ? { causa: adjudicacion.causa } : {}),
+              })),
+            }
+          : {}),
+        ...(evento.tantos
+          ? {
+              tantos: evento.tantos.map((tanto) => ({
+                asiento: asientoDe(tanto.jugador),
+                tanto: tanto.tanto,
+              })),
+            }
+          : {}),
+        ...(evento.marcadorCierre
+          ? {
+              marcadorCierre: evento.marcadorCierre.map((item) => ({
+                asiento: asientoDelEquipo(item.equipo),
+                puntos: item.puntos,
+              })),
+            }
+          : {}),
+      })),
+      bazasCompletadas: estado.mano.juego.bazasCompletadas.map((baza) =>
+        proyectarBaza(baza.jugadas, asientoDe, baza.resultado.equipoGanador, asientoDelEquipo),
+      ),
+      bazaActual: proyectarBaza(estado.mano.juego.bazaActual.jugadas, asientoDe),
       turno: estado.mano.juego.jugadorTurno ? asientoDe(estado.mano.juego.jugadorTurno) : null,
       desafiosPendientes: {
         envido: estado.mano.envido.pendiente
@@ -369,7 +658,24 @@ export class RepositorioPartidasEnMemoria {
           estado.mano.liquidacionMazo?.oportunidadFlor?.estado === "pendiente" &&
           estado.mano.liquidacionMazo.oportunidadFlor.jugador === sesion.id,
       },
-      ultimoCierre: partida.ultimoCierre,
+      ultimoCierre: partida.ultimoCierre
+        ? {
+            ...partida.ultimoCierre,
+            asientoGanador: asientoDelEquipo(partida.ultimoCierre.equipo),
+            bazas: partida.ultimoCierre.bazas.map((baza) =>
+              proyectarBaza(baza.jugadas, asientoDe, baza.equipoGanador, asientoDelEquipo),
+            ),
+          }
+        : null,
+      continuacion: partida.esperaContinuacion
+        ? {
+            idMano: partida.esperaContinuacion.idMano,
+            confirmadaPropia: partida.esperaContinuacion.confirmados.has(sesion.id),
+            faltantes:
+              partida.esperaContinuacion.requeridos.size -
+              partida.esperaContinuacion.confirmados.size,
+          }
+        : null,
     };
   }
 
@@ -428,19 +734,81 @@ export class RepositorioPartidasEnMemoria {
   }
 
   #debeActuarMaquina(estado: EstadoPartida, maquina: string): boolean {
-    if (estado.mano.juego.jugadorTurno === maquina) return true;
-    if (estado.mano.liquidacionMazo?.oportunidadFlor?.estado === "pendiente")
-      return estado.mano.liquidacionMazo.oportunidadFlor.jugador === maquina;
     const equipo = estado.mesa.jugadores.find((jugador) => jugador.id === maquina)?.equipo;
     if (!equipo) return false;
-    return (
-      estado.mano.envido.pendiente?.equipoRespondedor === equipo ||
-      estado.mano.flor.pendiente?.equipoRespondedor === equipo ||
-      (estado.mano.truco.propuestaPendiente !== null &&
-        estado.mesa.jugadores.find(
-          (jugador) => jugador.id === estado.mano.truco.propuestaPendiente?.proponente,
-        )?.equipo !== equipo)
+    // Un desafío pendiente suspende el turno de cartas: sólo puede actuar quien debe responder.
+    if (
+      estado.mano.envido.pendiente ||
+      estado.mano.flor.pendiente ||
+      estado.mano.truco.propuestaPendiente
+    )
+      return (
+        estado.mano.envido.pendiente?.equipoRespondedor === equipo ||
+        estado.mano.flor.pendiente?.equipoRespondedor === equipo ||
+        (estado.mano.truco.propuestaPendiente !== null &&
+          estado.mesa.jugadores.find(
+            (jugador) => jugador.id === estado.mano.truco.propuestaPendiente?.proponente,
+          )?.equipo !== equipo)
+      );
+    if (estado.mano.liquidacionMazo?.oportunidadFlor?.estado === "pendiente")
+      return estado.mano.liquidacionMazo.oportunidadFlor.jugador === maquina;
+    const florFueraDeTurno = obtenerAccionesLegalesJugador(estado, maquina).some((accion) =>
+      ["anunciar-flor", "proponer-contra-flor", "proponer-contra-flor-al-resto"].includes(
+        accion.tipo,
+      ),
     );
+    if (florFueraDeTurno) return true;
+    if (estado.mano.juego.jugadorTurno === maquina) return true;
+    return false;
+  }
+
+  #registrarEventos(
+    partida: PartidaInterna,
+    estado: EstadoPartida,
+    eventos: readonly unknown[],
+  ): void {
+    for (const evento of eventos) {
+      const publico = proyectarEventoPublico(evento);
+      if (!publico) continue;
+      partida.eventosPublicos.push({
+        secuencia: partida.siguienteSecuenciaEvento++,
+        idMano: `mano-${estado.ordinalMano}`,
+        ...publico,
+      });
+    }
+  }
+
+  #registrarCierre(
+    partida: PartidaInterna,
+    estado: EstadoPartida,
+    puntos: number,
+    puntajesCierre: Readonly<Record<string, number>>,
+  ): void {
+    const ciclo = estado.mano.ciclo;
+    if (ciclo.fase !== "cierre-definitivo")
+      throw new Error("Sólo se puede registrar el cierre definitivo de una mano.");
+    partida.eventosPublicos.push({
+      secuencia: partida.siguienteSecuenciaEvento++,
+      idMano: `mano-${estado.ordinalMano}`,
+      tipo: "mano-cerrada",
+      equipoGanador: ciclo.equipoGanador,
+      adjudicaciones: [
+        {
+          equipo: ciclo.equipoGanador,
+          puntos,
+          causa: ciclo.causa,
+        },
+      ],
+    });
+    partida.eventosPublicos.push({
+      secuencia: partida.siguienteSecuenciaEvento++,
+      idMano: `mano-${estado.ordinalMano}`,
+      tipo: "tanteador-cierre",
+      marcadorCierre: estado.mesa.jugadores.map((jugador) => ({
+        equipo: jugador.equipo,
+        puntos: puntajesCierre[jugador.equipo] ?? 0,
+      })),
+    });
   }
 
   #avanzarPartida(estadoInicial: EstadoPartida, partida?: PartidaInterna): EstadoPartida {
@@ -460,20 +828,35 @@ export class RepositorioPartidasEnMemoria {
           ).reduce((a, b) => a + b, 0);
           partida.metricas.manos += 1;
           partida.metricas.puntos += puntos;
+          this.#registrarCierre(partida, estado, puntos, contabilizada.estado.puntajes);
           partida.ultimoCierre = {
             idMano: `mano-${estado.ordinalMano}`,
             version: partida.version,
             equipo: estado.mano.ciclo.equipoGanador,
             puntos,
             causa: estado.mano.ciclo.causa,
+            bazas: estado.mano.juego.bazasCompletadas.map((baza) => ({
+              jugadas: baza.jugadas.map((jugada) => ({
+                jugador: jugada.jugador,
+                carta: { ...jugada.carta },
+              })),
+              equipoGanador: baza.resultado.equipoGanador,
+            })),
           };
         }
         if (contabilizada.estado.fase === "partida-finalizada") return contabilizada.estado;
-        const siguiente = siguienteMano(contabilizada.estado, this.#mazoAleatorio());
-        if (!siguiente.aceptada) throw new Error("No se pudo preparar la siguiente mano.");
-        estado = siguiente.estado;
-        if (partida?.contraMaquina) partida.version += 1;
-        continue;
+        if (partida) {
+          partida.esperaContinuacion = {
+            idMano: `mano-${estado.ordinalMano}`,
+            requeridos: new Set(
+              partida.asientos.flatMap((asiento) =>
+                asiento && !asiento.automatico ? [asiento.jugadorId] : [],
+              ),
+            ),
+            confirmados: new Set(),
+          };
+        }
+        return contabilizada.estado;
       }
       const liquidacion = estado.mano.liquidacionMazo;
       if (
@@ -500,6 +883,7 @@ export class RepositorioPartidasEnMemoria {
         });
         if (!decision.aceptada)
           throw new Error(`La máquina no pudo decidir: ${decision.rechazo.codigo}.`);
+        if (partida) this.#registrarEventos(partida, estado, decision.eventos);
         estado = decision.estado;
         if (partida) {
           partida.metricas.cartas += decision.eventos.filter(

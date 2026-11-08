@@ -9,9 +9,463 @@ import { tieneFlor } from "@truco/game-engine";
 import type { Carta } from "@truco/shared";
 import { leerConfiguracion } from "./config.js";
 import { crearServidor } from "./server.js";
-import { RepositorioPartidasEnMemoria } from "./matches.js";
+import { proyectarEventoPublico, RepositorioPartidasEnMemoria } from "./matches.js";
 
-test("6C.6: partida contra máquina inicia sin espera y no expone su mano", () => {
+function fuenteSemilla(semilla: number) {
+  let estado = semilla >>> 0;
+  return {
+    enteroInclusivo(maximo: number) {
+      estado = (estado * 1_664_525 + 1_013_904_223) >>> 0;
+      return estado % (maximo + 1);
+    },
+  };
+}
+
+test("la proyección pública conserva el canto exacto de Real Envido", () => {
+  assert.deepEqual(
+    proyectarEventoPublico({
+      tipo: "envido-aumentado",
+      cadena: {
+        proponente: "maquina",
+        cantos: [
+          { jugador: "ana", equipo: "A", canto: "envido" },
+          { jugador: "maquina", equipo: "B", canto: "real-envido" },
+        ],
+      },
+    }),
+    {
+      tipo: "envido-aumentado",
+      jugador: "maquina",
+      canto: "real-envido",
+    },
+  );
+});
+
+test("la proyección distingue un retiro individual del cierre definitivo por mazo", () => {
+  assert.deepEqual(proyectarEventoPublico({ tipo: "jugador-retirado", jugador: "ana" }), {
+    tipo: "jugador-retirado",
+    jugador: "ana",
+  });
+  assert.deepEqual(proyectarEventoPublico({ tipo: "mano-decidida-por-mazo", equipo: "B" }), {
+    tipo: "mano-decidida-por-mazo",
+    equipoGanador: "B",
+  });
+});
+
+test("el cierre de mano conserva el tanteador autoritativo sin duplicarlo", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(fuenteSemilla(4), { decidir: () => null });
+  const creada = repositorio.crearSesion("Jorge");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const inicial = repositorio.snapshot(partida.id, humano);
+  if (inicial.estado !== "iniciada") throw new Error("La mano debía iniciar.");
+  const cierre = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "cerrar-por-mazo",
+    expectedVersion: inicial.version,
+    action: { type: "go-to-mazo" },
+  });
+  assert.equal(cierre.aceptada, true, cierre.codigo);
+  const posterior = repositorio.snapshot(partida.id, humano);
+  if (posterior.estado !== "iniciada") throw new Error("La partida debía conservar el cierre.");
+  const tanteadores = posterior.eventosPublicos.filter((evento) => evento.tipo === "tanteador-cierre");
+  assert.equal(tanteadores.length, 1);
+  assert.deepEqual(tanteadores[0]?.marcadorCierre, posterior.marcador);
+  const repetido = repositorio.snapshot(partida.id, humano);
+  if (repetido.estado !== "iniciada") throw new Error("La partida debía conservar el cierre.");
+  assert.deepEqual(repetido.eventosPublicos, posterior.eventosPublicos);
+});
+
+test("la proyección pública no presenta el cierre técnico de Flor como una adjudicación", () => {
+  assert.equal(
+    proyectarEventoPublico({
+      tipo: "flor-adjudicada",
+      adjudicaciones: [
+        { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+        { equipo: "B", puntos: 0, motivo: "sin-desafio" },
+      ],
+    }),
+    null,
+  );
+  assert.deepEqual(
+    proyectarEventoPublico({
+      tipo: "flor-adjudicada",
+      adjudicaciones: [
+        { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+        { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+      ],
+    }),
+    {
+      tipo: "flor-adjudicada",
+      equipoGanador: "B",
+      adjudicaciones: [
+        { equipo: "A", puntos: 0, causa: "sin-desafio" },
+        { equipo: "B", puntos: 3, causa: "sin-desafio" },
+      ],
+    },
+  );
+});
+
+test("la Flor unilateral de la máquina conserva ambas adjudicaciones y suma tres al marcador público", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(
+    { enteroInclusivo: () => 0 },
+    {
+      decidir: ({ accionesLegales }) =>
+        accionesLegales.find((accion) => accion.tipo === "anunciar-flor") ??
+        accionesLegales.find((accion) => accion.tipo === "jugar-carta") ??
+        null,
+    },
+  );
+  const creada = repositorio.crearSesion("Jorge");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const inicial = repositorio.snapshot(partida.id, humano);
+  if (inicial.estado !== "iniciada") throw new Error("La partida debía iniciarse.");
+  const carta = inicial.cartasPropias[0];
+  assert.ok(carta);
+  const resultado = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "cerrar-flor-unilateral",
+    expectedVersion: inicial.version,
+    action: { type: "play-card", card: carta },
+  });
+  assert.equal(resultado.aceptada, true, resultado.codigo);
+  const posterior = repositorio.snapshot(partida.id, humano);
+  if (posterior.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  const flor = posterior.eventosPublicos.find((evento) => evento.tipo === "flor-adjudicada");
+  assert.deepEqual(flor?.adjudicaciones, [
+    { asientoGanador: 0, puntos: 0, causa: "sin-desafio" },
+    { asientoGanador: 1, puntos: 3, causa: "sin-desafio" },
+  ]);
+  assert.deepEqual(posterior.marcador, [
+    { asiento: 0, puntos: 0 },
+    { asiento: 1, puntos: 3 },
+  ]);
+});
+
+test("la Flor unilateral del jugador no publica Envido y rechaza el envío directo", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(
+    fuenteSemilla(4),
+    { decidir: () => null },
+  );
+  const creada = repositorio.crearSesion("Jorge");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const inicial = repositorio.snapshot(partida.id, humano);
+  if (inicial.estado !== "iniciada") throw new Error("La partida debía iniciarse.");
+  assert.ok(inicial.accionesDisponibles.some((accion) => accion.type === "announce-flor"));
+  const flor = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "flor-propia",
+    expectedVersion: inicial.version,
+    action: { type: "announce-flor" },
+  });
+  assert.equal(flor.aceptada, true, flor.codigo);
+  const posterior = repositorio.snapshot(partida.id, humano);
+  if (posterior.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  assert.equal(
+    posterior.accionesDisponibles.some(
+      (accion) => accion.type === "envido" || accion.type === "raise-envido",
+    ),
+    false,
+  );
+  assert.deepEqual(
+    posterior.eventosPublicos.find((evento) => evento.tipo === "flor-adjudicada")?.adjudicaciones,
+    [
+      { asientoGanador: 0, puntos: 3, causa: "sin-desafio" },
+      { asientoGanador: 1, puntos: 0, causa: "sin-desafio" },
+    ],
+  );
+  const marcadorAntesDelRechazo = posterior.marcador;
+  const eventosAntesDelRechazo = posterior.eventosPublicos;
+  const rechazo = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "envido-despues-de-flor",
+    expectedVersion: posterior.version,
+    action: { type: "envido", canto: "envido" },
+  });
+  assert.equal(rechazo.aceptada, false);
+  if (rechazo.aceptada) assert.fail("El Envido posterior a Flor no puede confirmarse.");
+  assert.equal(rechazo.codigo, "flor-ya-anunciada");
+  assert.equal(rechazo.version, posterior.version);
+  const trasRechazo = repositorio.snapshot(partida.id, humano);
+  if (trasRechazo.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  assert.deepEqual(trasRechazo.marcador, marcadorAntesDelRechazo);
+  assert.deepEqual(trasRechazo.eventosPublicos, eventosAntesDelRechazo);
+});
+
+test("Flor rival adjudicada no publica Envido al responder Truco", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(fuenteSemilla(8), {
+    decidir: ({ accionesLegales }) =>
+      accionesLegales.find((accion) => accion.tipo === "anunciar-flor") ??
+      accionesLegales.find((accion) => accion.tipo === "proponer-truco") ??
+      null,
+  });
+  const creada = repositorio.crearSesion("Jorge");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const inicial = repositorio.snapshot(partida.id, humano);
+  if (inicial.estado !== "iniciada") throw new Error("La mano debía iniciar.");
+  const carta = inicial.cartasPropias[0];
+  assert.ok(carta);
+  const jugada = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "carta-antes-flor-rival",
+    expectedVersion: inicial.version,
+    action: { type: "play-card", card: carta },
+  });
+  assert.equal(jugada.aceptada, true, jugada.codigo);
+  const posterior = repositorio.snapshot(partida.id, humano);
+  if (posterior.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  assert.deepEqual(posterior.marcador, [
+    { asiento: 0, puntos: 0 },
+    { asiento: 1, puntos: 3 },
+  ]);
+  assert.equal(posterior.desafiosPendientes.truco?.proponente, 1);
+  assert.equal(
+    posterior.accionesDisponibles.some(
+      (accion) => accion.type === "envido" || accion.type === "raise-envido",
+    ),
+    false,
+  );
+  assert.ok(posterior.accionesDisponibles.some((accion) => accion.type === "accept-truco"));
+  assert.ok(posterior.accionesDisponibles.some((accion) => accion.type === "reject-truco"));
+  assert.ok(posterior.accionesDisponibles.some((accion) => accion.type === "retruco"));
+  const rechazo = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "envido-despues-de-flor-rival",
+    expectedVersion: posterior.version,
+    action: { type: "envido", canto: "envido" },
+  });
+  assert.equal(rechazo.aceptada, false);
+  if (rechazo.aceptada) assert.fail("El Envido posterior a Flor rival no puede confirmarse.");
+  assert.equal(rechazo.codigo, "flor-ya-anunciada");
+  assert.equal(rechazo.version, posterior.version);
+  const trasRechazo = repositorio.snapshot(partida.id, humano);
+  if (trasRechazo.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  assert.deepEqual(trasRechazo.marcador, posterior.marcador);
+  assert.deepEqual(trasRechazo.eventosPublicos, posterior.eventosPublicos);
+  assert.deepEqual(trasRechazo.desafiosPendientes.truco, posterior.desafiosPendientes.truco);
+});
+
+test("Flor como respuesta a Envido se publica fuera de turno y cancela sin puntos", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(fuenteSemilla(15), {
+    decidir: ({ accionesLegales }) =>
+      accionesLegales.find(
+        (accion) => accion.tipo === "iniciar-envido" && accion.canto === "envido",
+      ) ?? accionesLegales.find((accion) => accion.tipo === "proponer-truco") ?? null,
+  });
+  const creada = repositorio.crearSesion("Jorge");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const pendiente = repositorio.snapshot(partida.id, humano);
+  if (pendiente.estado !== "iniciada") throw new Error("La mano debía iniciar.");
+  assert.equal(pendiente.turno, 1);
+  assert.equal(pendiente.desafiosPendientes.envido?.respondedor, 0);
+  assert.ok(pendiente.accionesDisponibles.some((accion) => accion.type === "announce-flor"));
+  const turnoAntes = pendiente.turno;
+  const respuesta = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "flor-responde-envido",
+    expectedVersion: pendiente.version,
+    action: { type: "announce-flor" },
+  });
+  assert.equal(respuesta.aceptada, true, respuesta.codigo);
+  const posterior = repositorio.snapshot(partida.id, humano);
+  if (posterior.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  assert.equal(posterior.desafiosPendientes.envido, null);
+  assert.deepEqual(posterior.marcador, [
+    { asiento: 0, puntos: 3 },
+    { asiento: 1, puntos: 0 },
+  ]);
+  assert.ok(posterior.eventosPublicos.some((evento) => evento.tipo === "flor-anunciada"));
+  assert.ok(
+    posterior.eventosPublicos.some((evento) => evento.tipo === "envido-cancelado-por-flor"),
+  );
+  assert.equal(
+    posterior.eventosPublicos.some(
+      (evento) => evento.tipo === "envido-rechazado" || evento.tipo === "envido-aceptado",
+    ),
+    false,
+  );
+  assert.equal(posterior.turno, turnoAntes);
+});
+
+test("WebSocket rechaza Envido posterior a Flor sin devolver error genérico", async () => {
+  const servidor = crearServidor({
+    aleatoriedad: fuenteSemilla(4),
+    politicaAutomatica: { decidir: () => null },
+  });
+  servidor.listen(0, "127.0.0.1");
+  await once(servidor, "listening");
+  const direccion = servidor.address();
+  assert.ok(direccion && typeof direccion !== "string");
+  const http = `http://127.0.0.1:${direccion.port}`;
+  const socket = new WebSocket(`ws://127.0.0.1:${direccion.port}/ws`);
+  const recibidos: Record<string, unknown>[] = [];
+  socket.on("message", (datos: Buffer) => recibidos.push(JSON.parse(datos.toString("utf8"))));
+  const leer = async (): Promise<Record<string, unknown>> => {
+    for (let intento = 0; intento < 100; intento++) {
+      const mensaje = recibidos.shift();
+      if (mensaje) return mensaje;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("No se recibió respuesta WebSocket.");
+  };
+
+  try {
+    const sesion = await fetch(`${http}/api/guest-sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nickname: "Jorge" }),
+    });
+    const { token } = (await sesion.json()) as { token: string };
+    const creada = await fetch(`${http}/api/matches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "1v1-vs-machine", targetScore: 40 }),
+    });
+    const { matchId } = (await creada.json()) as { matchId: string };
+    if (socket.readyState !== WebSocket.OPEN) await once(socket, "open");
+    socket.send(JSON.stringify({ type: "auth", token }));
+    assert.equal((await leer()).type, "auth.ok");
+    socket.send(JSON.stringify({ type: "subscribe", matchId }));
+    const inicial = (await leer()).snapshot as {
+      version: number;
+      accionesDisponibles: readonly { type: string }[];
+    };
+    assert.ok(inicial.accionesDisponibles.some((accion) => accion.type === "announce-flor"));
+
+    socket.send(
+      JSON.stringify({
+        type: "game.action",
+        matchId,
+        actionId: "flor-ws",
+        expectedVersion: inicial.version,
+        action: { type: "announce-flor" },
+      }),
+    );
+    assert.equal((await leer()).type, "game.confirmed");
+    const posterior = (await leer()).snapshot as {
+      version: number;
+      accionesDisponibles: readonly { type: string }[];
+    };
+    assert.equal(
+      posterior.accionesDisponibles.some(
+        (accion) => accion.type === "envido" || accion.type === "raise-envido",
+      ),
+      false,
+    );
+
+    socket.send(
+      JSON.stringify({
+        type: "game.action",
+        matchId,
+        actionId: "envido-despues-de-flor-ws",
+        expectedVersion: posterior.version,
+        action: { type: "envido", canto: "envido" },
+      }),
+    );
+    assert.deepEqual(await leer(), {
+      type: "game.rejected",
+      actionId: "envido-despues-de-flor-ws",
+      code: "flor-ya-anunciada",
+      version: posterior.version,
+    });
+    assert.equal(recibidos.some((mensaje) => mensaje.type === "error"), false);
+  } finally {
+    socket.close();
+    await once(socket, "close");
+    await new Promise<void>((resolve) => servidor.close(() => resolve()));
+  }
+});
+
+test("6C.7.3a.1: el historial publico es estable, ordenado y no filtra datos privados", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(
+    { enteroInclusivo: () => 0 },
+    {
+      decidir: ({ accionesLegales }) =>
+        accionesLegales.find((accion) => accion.tipo === "jugar-carta") ??
+        accionesLegales[0] ??
+        null,
+    },
+  );
+  const creada = repositorio.crearSesion("Ana");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const inicial = repositorio.snapshot(partida.id, humano);
+  if (inicial.estado !== "iniciada") throw new Error("La partida debía iniciarse.");
+  assert.equal(inicial.turno, inicial.asientoPropio);
+  const carta = inicial.cartasPropias[0];
+  assert.ok(carta);
+
+  const resultado = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "historial-1",
+    expectedVersion: inicial.version,
+    action: { type: "play-card", card: carta },
+  });
+  assert.equal(resultado.aceptada, true, resultado.codigo);
+  const posterior = repositorio.snapshot(partida.id, humano);
+  if (posterior.estado !== "iniciada") throw new Error("La partida debía seguir iniciada.");
+  assert.ok(posterior.eventosPublicos.length >= 1);
+  assert.deepEqual(
+    posterior.eventosPublicos.map((evento) => evento.secuencia),
+    [...posterior.eventosPublicos.map((evento) => evento.secuencia)].sort((a, b) => a - b),
+  );
+  assert.equal(
+    new Set(posterior.eventosPublicos.map((evento) => evento.secuencia)).size,
+    posterior.eventosPublicos.length,
+  );
+  assert.ok(posterior.eventosPublicos.every((evento) => evento.idMano === "mano-1"));
+  assert.ok(posterior.eventosPublicos.some((evento) => evento.tipo === "carta-jugada"));
+  const recuperado = repositorio.snapshot(partida.id, humano);
+  if (recuperado.estado !== "iniciada") throw new Error("La partida debía seguir iniciada.");
+  assert.deepEqual(recuperado.eventosPublicos, posterior.eventosPublicos);
+
+  const repetida = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "historial-1",
+    expectedVersion: inicial.version,
+    action: { type: "play-card", card: carta },
+  });
+  assert.deepEqual(repetida, resultado);
+  const trasRepetida = repositorio.snapshot(partida.id, humano);
+  if (trasRepetida.estado !== "iniciada") throw new Error("La partida debía seguir iniciada.");
+  assert.deepEqual(trasRepetida.eventosPublicos, posterior.eventosPublicos);
+
+  for (let paso = 2; paso < 8; paso++) {
+    const actual = repositorio.snapshot(partida.id, humano);
+    if (actual.estado !== "iniciada" || actual.turno !== actual.asientoPropio) continue;
+    const siguienteCarta = actual.cartasPropias[0];
+    if (!siguienteCarta) continue;
+    const accion = repositorio.aplicarAccion(partida.id, humano, {
+      actionId: `historial-${paso}`,
+      expectedVersion: actual.version,
+      action: { type: "play-card", card: siguienteCarta },
+    });
+    assert.equal(accion.aceptada, true, accion.codigo);
+  }
+  const secuenciaCompleta = repositorio.snapshot(partida.id, humano);
+  if (secuenciaCompleta.estado !== "iniciada") throw new Error("La partida debía seguir iniciada.");
+  assert.ok(
+    secuenciaCompleta.eventosPublicos.filter((evento) => evento.tipo === "carta-jugada").length >=
+      4,
+  );
+  assert.ok(
+    secuenciaCompleta.eventosPublicos.some(
+      (evento) => evento.tipo === "carta-jugada" && evento.asiento !== inicial.asientoPropio,
+    ),
+  );
+  const serializado = JSON.stringify(posterior.eventosPublicos);
+  assert.equal(serializado.includes("__maquina__"), false);
+  assert.equal(serializado.includes('"carta":'), false);
+  assert.equal(serializado.includes('"tanto":'), false);
+});
+
+function cartasPublicas(snapshot: unknown): readonly { asiento: number; carta: Carta }[] {
+  const proyeccion = snapshot as {
+    bazasCompletadas?: readonly { jugadas: readonly { asiento: number; carta: Carta }[] }[];
+    bazaActual?: { jugadas: readonly { asiento: number; carta: Carta }[] };
+  };
+  return [
+    ...(proyeccion.bazasCompletadas?.flatMap((baza) => baza.jugadas) ?? []),
+    ...(proyeccion.bazaActual?.jugadas ?? []),
+  ];
+}
+
+test("6C.6: partida contra mÃƒÆ’Ã‚Â¡quina inicia sin espera y no expone su mano", () => {
   const repositorio = new RepositorioPartidasEnMemoria({ enteroInclusivo: () => 0 });
   const sesionCreada = repositorio.crearSesion("Ana");
   const humano = repositorio.autenticar(sesionCreada.token);
@@ -22,10 +476,104 @@ test("6C.6: partida contra máquina inicia sin espera y no expone su mano", () =
   assert.equal(snapshot.participantes.length, 2);
   assert.equal(snapshot.participantes[1]?.automatico, true);
   assert.equal(snapshot.cartasPropias.length, 3);
+  assert.equal(snapshot.cartasRivalesRestantes, 3);
+  assert.deepEqual(snapshot.bazasCompletadas, []);
+  assert.deepEqual(snapshot.bazaActual, { asientoGanador: null, jugadas: [] });
   assert.equal(JSON.stringify(snapshot).includes("__maquina__"), false);
 });
 
-test("6C.6: el servidor invoca una política inyectada sólo con acciones legales", () => {
+test("6C.7.2b: play-card web contra la mÃ¡quina confirma y publica el snapshot", async () => {
+  const servidor = crearServidor({
+    aleatoriedad: { enteroInclusivo: (maximo) => Math.min(1, maximo) },
+  });
+  servidor.listen(0, "127.0.0.1");
+  await once(servidor, "listening");
+  const direccion = servidor.address();
+  assert.ok(direccion && typeof direccion !== "string");
+  const http = `http://127.0.0.1:${direccion.port}`;
+  const socket = new WebSocket(`ws://127.0.0.1:${direccion.port}/ws`);
+  const recibidos: Record<string, unknown>[] = [];
+  socket.on("message", (datos: Buffer) => recibidos.push(JSON.parse(datos.toString("utf8"))));
+  const leer = async (): Promise<Record<string, unknown>> => {
+    for (let intento = 0; intento < 100; intento++) {
+      const mensaje = recibidos.shift();
+      if (mensaje) return mensaje;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("No se recibió respuesta WebSocket.");
+  };
+
+  try {
+    const sesion = await fetch(`${http}/api/guest-sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nickname: "Ana" }),
+    });
+    const { token } = (await sesion.json()) as { token: string };
+    const creada = await fetch(`${http}/api/matches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "1v1-vs-machine", targetScore: 40 }),
+    });
+    const { matchId } = (await creada.json()) as { matchId: string };
+    if (socket.readyState !== WebSocket.OPEN) await once(socket, "open");
+    socket.send(JSON.stringify({ type: "auth", token }));
+    assert.equal((await leer()).type, "auth.ok");
+    socket.send(JSON.stringify({ type: "subscribe", matchId }));
+    const inicial = (await leer()).snapshot as {
+      version: number;
+      cartasPropias: Carta[];
+      turno: number;
+      asientoPropio: number;
+    };
+    assert.equal(inicial.turno, inicial.asientoPropio);
+    const carta = inicial.cartasPropias[0];
+    assert.ok(carta);
+    socket.send(
+      JSON.stringify({
+        type: "game.action",
+        matchId,
+        actionId: "play-1",
+        expectedVersion: inicial.version,
+        action: { type: "play-card", card: carta },
+      }),
+    );
+    const confirmacion = await leer();
+    assert.equal(confirmacion.type, "game.confirmed");
+    assert.equal(confirmacion.actionId, "play-1");
+    assert.ok((confirmacion.version as number) > inicial.version);
+    const posterior = (await leer()).snapshot as {
+      idMano: string;
+      cartasPropias: Carta[];
+      cartasRivalesRestantes: number;
+      turno: number | null;
+      desafiosPendientes: unknown;
+      bazaActual: { asientoGanador: number | null; jugadas: readonly { carta: Carta }[] };
+      ultimoCierre: unknown;
+    };
+    assert.equal(posterior.idMano, "mano-1");
+    assert.equal(posterior.ultimoCierre, null);
+    assert.equal(posterior.cartasPropias.length, 2);
+    assert.equal(posterior.cartasRivalesRestantes, 3);
+    assert.equal(posterior.bazaActual.asientoGanador, null);
+    assert.equal(posterior.turno, null);
+    assert.deepEqual(posterior.desafiosPendientes, {
+      envido: null,
+      flor: null,
+      truco: null,
+      oportunidadFlorPropia: true,
+    });
+    assert.deepEqual(
+      posterior.bazaActual.jugadas.map((jugada) => jugada.carta),
+      [carta],
+    );
+  } finally {
+    socket.close();
+    await new Promise<void>((resolve) => servidor.close(() => resolve()));
+  }
+});
+
+test("6C.6: el servidor invoca una polÃƒÆ’Ã‚Â­tica inyectada sÃƒÆ’Ã‚Â³lo con acciones legales", () => {
   let llamadas = 0;
   const repositorio = new RepositorioPartidasEnMemoria(
     { enteroInclusivo: () => 0 },
@@ -81,7 +629,7 @@ test("6C.6: retiro conserva oportunidad de Flor y no bloquea el avance", () => {
   assert.ok(cierres > 0);
 });
 
-test("6C.6-R2: humano y máquina juegan cartas reglamentarias mediante bazas", () => {
+test("6C.6-R2: humano y mÃƒÆ’Ã‚Â¡quina juegan cartas reglamentarias mediante bazas", () => {
   const repositorio = new RepositorioPartidasEnMemoria(
     { enteroInclusivo: () => 0 },
     {
@@ -101,7 +649,7 @@ test("6C.6-R2: humano y máquina juegan cartas reglamentarias mediante bazas", (
   for (let paso = 0; paso < 8; paso++) {
     const snapshot = repositorio.snapshot(partida.id, humano);
     assert.equal(snapshot.estado, "iniciada");
-    cartasPublicasMaximas = Math.max(cartasPublicasMaximas, snapshot.cartasJugadas.length);
+    cartasPublicasMaximas = Math.max(cartasPublicasMaximas, cartasPublicas(snapshot).length);
     assert.ok(snapshot.version >= versionAnterior);
     versionAnterior = snapshot.version;
     if (snapshot.turno !== snapshot.asientoPropio) continue;
@@ -122,7 +670,7 @@ test("6C.6-R2: humano y máquina juegan cartas reglamentarias mediante bazas", (
   assert.equal(JSON.stringify(final).includes("__maquina__"), false);
 });
 
-test("configuración: valores por defecto y puertos válidos", () => {
+test("configuraciÃƒÆ’Ã‚Â³n: valores por defecto y puertos vÃƒÆ’Ã‚Â¡lidos", () => {
   assert.deepEqual(leerConfiguracion({}), { host: "127.0.0.1", puerto: 3000 });
   assert.deepEqual(
     leerConfiguracion({ TRUCO_SERVER_HOST: "localhost", TRUCO_SERVER_PORT: "1234" }),
@@ -132,7 +680,7 @@ test("configuración: valores por defecto y puertos válidos", () => {
   assert.equal(leerConfiguracion({ TRUCO_SERVER_PORT: "65535" }).puerto, 65535);
 });
 
-test("configuración: rechaza valores inválidos", () => {
+test("configuraciÃƒÆ’Ã‚Â³n: rechaza valores invÃƒÆ’Ã‚Â¡lidos", () => {
   for (const puerto of ["", "-1", "65536", "1.5", "abc", " 3000", "9007199254740992"]) {
     assert.throws(() => leerConfiguracion({ TRUCO_SERVER_PORT: puerto }), /TRUCO_SERVER_PORT/);
   }
@@ -141,7 +689,7 @@ test("configuración: rechaza valores inválidos", () => {
   }
 });
 
-test("el ejecutable rechaza configuración inválida sin iniciar", () => {
+test("el ejecutable rechaza configuraciÃƒÆ’Ã‚Â³n invÃƒÆ’Ã‚Â¡lida sin iniciar", () => {
   const resultado = spawnSync(
     process.execPath,
     [fileURLToPath(new URL("./main.js", import.meta.url))],
@@ -151,11 +699,11 @@ test("el ejecutable rechaza configuración inválida sin iniciar", () => {
     },
   );
   assert.notEqual(resultado.status, 0);
-  assert.match(resultado.stderr, /Configuración inválida:.*TRUCO_SERVER_PORT/);
+  assert.match(resultado.stderr, /ConfiguraciÃƒÆ’Ã‚Â³n invÃƒÆ’Ã‚Â¡lida:.*TRUCO_SERVER_PORT/);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  test(`el manejador ${signal} cierra el proceso después de iniciar`, () => {
+  test(`el manejador ${signal} cierra el proceso despuÃƒÆ’Ã‚Â©s de iniciar`, () => {
     const entrada = fileURLToPath(new URL("./main.js", import.meta.url));
     const script = `import { pathToFileURL } from 'node:url'; await import(pathToFileURL(process.argv[1]).href); setTimeout(() => process.emit('${signal}'), 200);`;
     const resultado = spawnSync(process.execPath, ["--input-type=module", "-e", script, entrada], {
@@ -209,7 +757,7 @@ test("servidor HTTP: salud, errores y cierre liberan el puerto", async () => {
   );
 });
 
-test("API 6A: sesiones, asientos, inicio canónico y snapshots privados", async () => {
+test("API 6A: sesiones, asientos, inicio canÃƒÆ’Ã‚Â³nico y snapshots privados", async () => {
   const servidor = crearServidor({ aleatoriedad: { enteroInclusivo: () => 0 } });
   servidor.listen(0, "127.0.0.1");
   await once(servidor, "listening");
@@ -246,11 +794,11 @@ test("API 6A: sesiones, asientos, inicio canónico y snapshots privados", async 
     );
     assert.equal((await json("/api/guest-sessions")).status, 405);
 
-    const ana = await crearSesion("Ana Ñandú");
+    const ana = await crearSesion("Ana ÃƒÆ’Ã¢â‚¬ËœandÃƒÆ’Ã‚Âº");
     const beto = await crearSesion("Beto_2");
     const carla = await crearSesion("Carla-3");
     assert.notEqual(ana.token, beto.token);
-    assert.equal(ana.apodo, "Ana Ñandú");
+    assert.equal(ana.apodo, "Ana ÃƒÆ’Ã¢â‚¬ËœandÃƒÆ’Ã‚Âº");
     assert.equal(
       (
         await json("/api/matches", {
@@ -358,12 +906,13 @@ test("API 6A: sesiones, asientos, inicio canónico y snapshots privados", async 
     const snapshotAna = (await respuestaAna.json()) as {
       cartasPropias: readonly unknown[];
       participantes: readonly unknown[];
-      cartasJugadas: readonly unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
     };
     assert.equal(snapshotAna.cartasPropias.length, 3);
     assert.notDeepEqual(snapshotAna.cartasPropias, snapshotBeto.cartasPropias);
     assert.equal(snapshotAna.participantes.length, 2);
-    assert.equal(snapshotAna.cartasJugadas.length, 0);
+    assert.equal(cartasPublicas(snapshotAna).length, 0);
     const serializado = JSON.stringify(snapshotAna);
     assert.doesNotMatch(serializado, /canonico|restantes|entregas|jugadorId|token/i);
     for (const carta of snapshotBeto.cartasPropias)
@@ -531,9 +1080,12 @@ async function disputarPartidaAlMazo(metaPuntos: 30 | 40): Promise<void> {
     repartidor: number;
     muestra: Carta;
     cartasPropias: Carta[];
-    cartasJugadas: unknown[];
+    bazasCompletadas: unknown[];
+    bazaActual: { jugadas: unknown[] };
     marcador: readonly { asiento: number; puntos: number }[];
     desafiosPendientes: { envido: unknown; flor: unknown; truco: unknown };
+    idMano: string;
+    continuacion: { idMano: string } | null;
   };
   const sockets: WebSocket[] = [];
   try {
@@ -617,9 +1169,36 @@ async function disputarPartidaAlMazo(metaPuntos: 30 | 40): Promise<void> {
         assert.ok(!JSON.stringify(snapshotAna).includes(JSON.stringify(carta)));
 
       if (mano < metaPuntos) {
+        assert.ok(snapshotBeto.continuacion);
+        assert.equal(snapshotBeto.continuacion.idMano, snapshotBeto.idMano);
+        socketBeto.send(
+          JSON.stringify({
+            type: "game.action",
+            matchId,
+            actionId: `continuar-beto-${mano}`,
+            expectedVersion: snapshotBeto.version,
+            action: { type: "continue-hand", handId: snapshotBeto.continuacion.idMano },
+          }),
+        );
+        assert.equal((await leerBeto()).type, "game.confirmed");
+        snapshotBeto = (await leerBeto()).snapshot as SnapshotPartida;
+        snapshotAna = (await leerAna()).snapshot as SnapshotPartida;
+        assert.ok(snapshotBeto.continuacion);
+        socketAna.send(
+          JSON.stringify({
+            type: "game.action",
+            matchId,
+            actionId: `continuar-ana-${mano}`,
+            expectedVersion: snapshotAna.version,
+            action: { type: "continue-hand", handId: snapshotAna.continuacion!.idMano },
+          }),
+        );
+        assert.equal((await leerAna()).type, "game.confirmed");
+        snapshotAna = (await leerAna()).snapshot as SnapshotPartida;
+        snapshotBeto = (await leerBeto()).snapshot as SnapshotPartida;
         assert.notEqual(snapshotBeto.repartidor, repartidores.at(-1));
         repartidores.push(snapshotBeto.repartidor);
-        assert.equal(snapshotBeto.cartasJugadas.length, 0);
+        assert.equal(cartasPublicas(snapshotBeto).length, 0);
         assert.equal(snapshotBeto.cartasPropias.length, 3);
         assert.equal(tieneFlor(snapshotAna.cartasPropias, snapshotAna.muestra), false);
         assert.equal(tieneFlor(snapshotBeto.cartasPropias, snapshotBeto.muestra), false);
@@ -666,7 +1245,9 @@ async function disputarPartidaAlMazo(metaPuntos: 30 | 40): Promise<void> {
         repartidor: snapshotBeto.repartidor,
       },
     );
-    assert.equal(snapshotBeto.version, versionInicial + metaPuntos);
+    // Cada mazo confirmado y cada una de las dos confirmaciones humanas de las
+    // manos no terminales son transiciones autoritativas observables.
+    assert.equal(snapshotBeto.version, versionInicial + metaPuntos + 2 * (metaPuntos - 1));
   } finally {
     await Promise.all(
       sockets
@@ -740,9 +1321,12 @@ async function disputarManoPorCartas(conTruco: boolean): Promise<void> {
     turno: number | null;
     muestra: Carta;
     cartasPropias: Carta[];
-    cartasJugadas: readonly { asiento: number; carta: Carta }[];
+    bazasCompletadas: unknown[];
+    bazaActual: { jugadas: unknown[] };
     marcador: readonly { asiento: number; puntos: number }[];
     desafiosPendientes: { envido: unknown; flor: unknown; truco: unknown };
+    idMano: string;
+    continuacion: { idMano: string } | null;
   };
   const sockets: WebSocket[] = [];
   try {
@@ -817,7 +1401,7 @@ async function disputarManoPorCartas(conTruco: boolean): Promise<void> {
       assert.equal(snapshotBeto.version, snapshotAna.version);
     }
 
-    while (jugadas.length < 6 && snapshotBeto.repartidor === repartidorInicial) {
+    while (jugadas.length < 4 && snapshotBeto.repartidor === repartidorInicial) {
       const asiento = snapshotBeto.turno;
       assert.ok(asiento === 0 || asiento === 1);
       const snapshotDelTurno = asiento === 0 ? snapshotAna : snapshotBeto;
@@ -849,27 +1433,56 @@ async function disputarManoPorCartas(conTruco: boolean): Promise<void> {
 
       if (snapshotBeto.repartidor === repartidorInicial) {
         assert.ok(
-          snapshotAna.cartasJugadas.some(
+          cartasPublicas(snapshotAna).some(
             (jugada) =>
               jugada.asiento === asiento && JSON.stringify(jugada.carta) === JSON.stringify(carta),
           ),
         );
-        assert.equal(snapshotAna.cartasJugadas.length, jugadas.length);
+        assert.equal(cartasPublicas(snapshotAna).length, jugadas.length);
       }
     }
 
     assert.equal(jugadas.length, 4);
     assert.equal(jugadas.length / 2, 2);
+    assert.ok(snapshotBeto.continuacion);
+    assert.equal(snapshotBeto.continuacion.idMano, snapshotBeto.idMano);
+    assert.equal(snapshotBeto.repartidor, repartidorInicial);
+    socketBeto.send(
+      JSON.stringify({
+        type: "game.action",
+        matchId,
+        actionId: "continuar-beto",
+        expectedVersion: snapshotBeto.version,
+        action: { type: "continue-hand", handId: snapshotBeto.continuacion.idMano },
+      }),
+    );
+    assert.equal((await leerBeto()).type, "game.confirmed");
+    snapshotBeto = (await leerBeto()).snapshot as SnapshotMano;
+    snapshotAna = (await leerAna()).snapshot as SnapshotMano;
+    assert.ok(snapshotBeto.continuacion);
+    assert.equal(snapshotBeto.repartidor, repartidorInicial);
+    socketAna.send(
+      JSON.stringify({
+        type: "game.action",
+        matchId,
+        actionId: "continuar-ana",
+        expectedVersion: snapshotAna.version,
+        action: { type: "continue-hand", handId: snapshotAna.continuacion!.idMano },
+      }),
+    );
+    assert.equal((await leerAna()).type, "game.confirmed");
+    snapshotAna = (await leerAna()).snapshot as SnapshotMano;
+    snapshotBeto = (await leerBeto()).snapshot as SnapshotMano;
     assert.notEqual(snapshotBeto.repartidor, repartidorInicial);
-    assert.equal(snapshotAna.cartasJugadas.length, 0);
-    assert.equal(snapshotBeto.cartasJugadas.length, 0);
+    assert.equal(cartasPublicas(snapshotAna).length, 0);
+    assert.equal(cartasPublicas(snapshotBeto).length, 0);
     assert.deepEqual(snapshotAna.marcador, [
       { asiento: 0, puntos: 0 },
       { asiento: 1, puntos: conTruco ? 2 : 1 },
     ]);
     assert.deepEqual(snapshotBeto.marcador, snapshotAna.marcador);
     assert.equal(snapshotBeto.repartidor, 1);
-    assert.equal(snapshotBeto.version, versionInicial + jugadas.length + (conTruco ? 2 : 0));
+    assert.equal(snapshotBeto.version, versionInicial + jugadas.length + (conTruco ? 2 : 0) + 2);
     assert.equal(snapshotBeto.cartasPropias.length, 3);
     assert.equal(snapshotAna.cartasPropias.length, 3);
     assert.notDeepEqual(snapshotBeto.marcador, marcadorInicial);
@@ -946,9 +1559,12 @@ async function disputarPartidaPorCartas(conTrucosAceptados: boolean): Promise<vo
     turno: number | null;
     muestra: Carta;
     cartasPropias: Carta[];
-    cartasJugadas: readonly { asiento: number; carta: Carta }[];
+    bazasCompletadas: unknown[];
+    bazaActual: { jugadas: unknown[] };
     marcador: readonly { asiento: number; puntos: number }[];
     desafiosPendientes: { envido: unknown; flor: unknown; truco: unknown };
+    idMano: string;
+    continuacion: { idMano: string } | null;
   };
   const sockets: WebSocket[] = [];
   try {
@@ -1076,22 +1692,64 @@ async function disputarPartidaPorCartas(conTrucosAceptados: boolean): Promise<vo
       assert.equal(snapshotBeto.version, snapshotAna.version);
       assert.deepEqual(snapshotAna.marcador, snapshotBeto.marcador);
       assert.equal(snapshotAna.repartidor, snapshotBeto.repartidor);
+      const manoAntesDeContinuar = snapshotAna.idMano;
+      assert.equal(manoAntesDeContinuar, snapshotBeto.idMano);
+      const publicas = new Set(
+        cartasPublicas(snapshotAna).map((cartaPublica) => JSON.stringify(cartaPublica.carta)),
+      );
+      const privadasAna = snapshotAna.cartasPropias.filter(
+        (cartaAna) => !publicas.has(JSON.stringify(cartaAna)),
+      );
+      const privadasBeto = snapshotBeto.cartasPropias.filter(
+        (cartaBeto) => !publicas.has(JSON.stringify(cartaBeto)),
+      );
+      for (const cartaAna of privadasAna)
+        assert.ok(
+          !privadasBeto.some((cartaBeto) => JSON.stringify(cartaBeto) === JSON.stringify(cartaAna)),
+        );
+      for (const cartaBeto of privadasBeto)
+        assert.ok(
+          !privadasAna.some((cartaAna) => JSON.stringify(cartaAna) === JSON.stringify(cartaBeto)),
+        );
+      if (snapshotBeto.continuacion) {
+        assert.equal(snapshotBeto.repartidor, repartidorActual);
+        socketBeto.send(
+          JSON.stringify({
+            type: "game.action",
+            matchId,
+            actionId: `partida-continuar-beto-${manos + 1}`,
+            expectedVersion: snapshotBeto.version,
+            action: { type: "continue-hand", handId: snapshotBeto.continuacion.idMano },
+          }),
+        );
+        assert.equal((await leerBeto()).type, "game.confirmed");
+        snapshotBeto = (await leerBeto()).snapshot as SnapshotPartidaCartas;
+        snapshotAna = (await leerAna()).snapshot as SnapshotPartidaCartas;
+        assert.ok(snapshotBeto.continuacion);
+        socketAna.send(
+          JSON.stringify({
+            type: "game.action",
+            matchId,
+            actionId: `partida-continuar-ana-${manos + 1}`,
+            expectedVersion: snapshotAna.version,
+            action: { type: "continue-hand", handId: snapshotAna.continuacion!.idMano },
+          }),
+        );
+        assert.equal((await leerAna()).type, "game.confirmed");
+        snapshotAna = (await leerAna()).snapshot as SnapshotPartidaCartas;
+        snapshotBeto = (await leerBeto()).snapshot as SnapshotPartidaCartas;
+      }
       assert.equal(snapshotAna.turno, snapshotBeto.turno);
-      assert.deepEqual(snapshotAna.cartasJugadas, snapshotBeto.cartasJugadas);
+      assert.deepEqual(cartasPublicas(snapshotAna), cartasPublicas(snapshotBeto));
       assert.deepEqual(snapshotAna.desafiosPendientes, snapshotBeto.desafiosPendientes);
-      for (const cartaAna of snapshotAna.cartasPropias)
-        assert.ok(!JSON.stringify(snapshotBeto).includes(JSON.stringify(cartaAna)));
-      for (const cartaBeto of snapshotBeto.cartasPropias)
-        assert.ok(!JSON.stringify(snapshotAna).includes(JSON.stringify(cartaBeto)));
-
       const puntosActuales = snapshotBeto.marcador.reduce((total, item) => total + item.puntos, 0);
       const nuevaMano =
         snapshotAna.cartasPropias.length === 3 &&
         snapshotBeto.cartasPropias.length === 3 &&
-        snapshotBeto.cartasJugadas.length === 0;
+        cartasPublicas(snapshotBeto).length === 0;
       if (!nuevaMano && puntosActuales === puntosAnteriores) {
         assert.ok(
-          snapshotAna.cartasJugadas.some(
+          cartasPublicas(snapshotAna).some(
             (jugada) =>
               jugada.asiento === asiento && JSON.stringify(jugada.carta) === JSON.stringify(carta),
           ),
@@ -1108,8 +1766,8 @@ async function disputarPartidaPorCartas(conTrucosAceptados: boolean): Promise<vo
           assert.notEqual(snapshotBeto.repartidor, repartidorActual);
           repartidorActual = snapshotBeto.repartidor;
           rotaciones.push(repartidorActual);
-          assert.equal(snapshotBeto.cartasJugadas.length, 0);
-          assert.equal(snapshotAna.cartasJugadas.length, 0);
+          assert.equal(cartasPublicas(snapshotBeto).length, 0);
+          assert.equal(cartasPublicas(snapshotAna).length, 0);
           assert.equal(snapshotBeto.cartasPropias.length, 3);
           assert.equal(snapshotAna.cartasPropias.length, 3);
           trucoAceptadoEnMano = false;
@@ -1131,7 +1789,10 @@ async function disputarPartidaPorCartas(conTrucosAceptados: boolean): Promise<vo
     assert.equal(trucosAceptados, conTrucosAceptados ? 3 : 0);
     assert.equal(Math.max(...snapshotBeto.marcador.map((item) => item.puntos)), 30);
     assert.ok(snapshotBeto.marcador.every((item) => item.puntos <= 30));
-    assert.equal(snapshotBeto.version, versionInicial + cartasJugadas + trucosAceptados * 2);
+    assert.equal(
+      snapshotBeto.version,
+      versionInicial + cartasJugadas + trucosAceptados * 2 + 2 * (manos - 1),
+    );
     assert.equal(rotaciones.length, manos);
     socketBeto.send(
       JSON.stringify({
@@ -1200,7 +1861,7 @@ test("WebSocket 6B.4.4: completa una partida con Truco aceptado y cartas", async
   await disputarPartidaPorCartas(true);
 });
 
-test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acción", async () => {
+test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acciÃƒÆ’Ã‚Â³n", async () => {
   const eleccionesSinFlor = [
     33, 25, 7, 11, 17, 22, 25, 0, 1, 28, 3, 16, 9, 12, 21, 3, 17, 17, 15, 4, 13, 4, 3, 6, 1, 11, 7,
     0, 1, 6, 7, 6, 1, 6, 5, 0, 1, 2, 1,
@@ -1414,17 +2075,19 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
     assert.equal((await leerBeto()).type, "game.confirmed");
     const actualizacionAna = (await leerAna()).snapshot as {
       version: number;
-      cartasJugadas: unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
       cartasPropias: unknown[];
     };
     const actualizacionBeto = (await leerBeto()).snapshot as {
       version: number;
-      cartasJugadas: unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
       cartasPropias: unknown[];
     };
     assert.equal(actualizacionAna.version, trasRetrucoBeto.version + 1);
     assert.equal(actualizacionAna.version, actualizacionBeto.version);
-    assert.equal(actualizacionAna.cartasJugadas.length, 1);
+    assert.equal(cartasPublicas(actualizacionAna).length, 1);
     assert.equal(actualizacionBeto.cartasPropias.length, 2);
     assert.equal(actualizacionAna.cartasPropias.length, 3);
 
@@ -1454,14 +2117,16 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
     assert.equal((await leerBeto()).type, "game.confirmed");
     const reintentoAna = (await leerAna()).snapshot as {
       version: number;
-      cartasJugadas: unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
     };
     const reintentoBeto = (await leerBeto()).snapshot as {
       version: number;
-      cartasJugadas: unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
     };
     assert.equal(reintentoAna.version, actualizacionAna.version);
-    assert.equal(reintentoBeto.cartasJugadas.length, 1);
+    assert.equal(cartasPublicas(reintentoBeto).length, 1);
     socketBeto.send(
       JSON.stringify({
         type: "game.action",
@@ -1606,6 +2271,10 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
       version: number;
       desafiosPendientes: { envido: unknown };
       marcador: readonly { asiento: number; puntos: number }[];
+      eventosPublicos: readonly {
+        tipo: string;
+        tantos?: readonly { asiento: number; tanto: number }[];
+      }[];
     };
     const envidoBeto = (await leerBeto()).snapshot as {
       version: number;
@@ -1615,6 +2284,10 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
     assert.equal(envidoAna.desafiosPendientes.envido, null);
     assert.equal(envidoAna.version, envidoBeto.version);
     assert.deepEqual(envidoAna.marcador, envidoBeto.marcador);
+    const envidoAceptado = envidoAna.eventosPublicos.find(
+      (evento) => evento.tipo === "envido-aceptado",
+    );
+    assert.ok(envidoAceptado?.tantos?.length === 2);
     assert.notDeepEqual(envidoAnaInicial.cartasPropias, envidoBetoInicial.cartasPropias);
 
     const creadaEnvidoRechazado = await fetch(`${http}/api/matches`, {
@@ -1813,7 +2486,8 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
       version: number;
       marcador: readonly { asiento: number; puntos: number }[];
       cartasPropias: Carta[];
-      cartasJugadas: unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
       desafiosPendientes: { truco: { nivel: string } | null };
     };
     assert.ok(confirmacionConcurrencia);
@@ -1829,7 +2503,8 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
     const actualizacionConcurrenciaAna = (await leerAna()).snapshot as {
       version: number;
       marcador: readonly { asiento: number; puntos: number }[];
-      cartasJugadas: unknown[];
+      bazasCompletadas: unknown[];
+      bazaActual: { jugadas: unknown[] };
       desafiosPendientes: { truco: { nivel: string } | null };
     };
     assert.equal(actualizacionConcurrenciaBeto.version, concurrenciaBetoInicial.version + 1);
@@ -1837,11 +2512,11 @@ test("WebSocket 6B: autentica, sincroniza snapshots privados y aplica una acció
     assert.deepEqual(actualizacionConcurrenciaAna.marcador, actualizacionConcurrenciaBeto.marcador);
     assert.ok(actualizacionConcurrenciaAna.marcador.every((item) => item.puntos === 0));
     if (confirmacionConcurrencia.actionId === "concurrencia-truco") {
-      assert.equal(actualizacionConcurrenciaBeto.cartasJugadas.length, 0);
+      assert.equal(cartasPublicas(actualizacionConcurrenciaBeto).length, 0);
       assert.equal(actualizacionConcurrenciaBeto.cartasPropias.length, 3);
       assert.equal(actualizacionConcurrenciaAna.desafiosPendientes.truco?.nivel, "truco");
     } else {
-      assert.equal(actualizacionConcurrenciaBeto.cartasJugadas.length, 1);
+      assert.equal(cartasPublicas(actualizacionConcurrenciaBeto).length, 1);
       assert.equal(actualizacionConcurrenciaBeto.cartasPropias.length, 2);
       assert.equal(actualizacionConcurrenciaAna.desafiosPendientes.truco, null);
     }

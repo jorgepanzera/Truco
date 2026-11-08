@@ -584,6 +584,28 @@ export function obtenerContextoEnvido(
     },
   };
 }
+
+function contextoEnvidoParaAccion(
+  estado: EstadoManoCoordinada,
+  contexto: ContextoEnvido,
+  accion: AccionCoordinada,
+): ContextoEnvido {
+  if (accion.tipo !== "iniciar-envido") return contexto;
+  const propuesta = estado.truco.propuestaPendiente;
+  const proponente = propuesta
+    ? estado.juego.mano.mesa.jugadores.find((jugador) => jugador.id === propuesta.proponente)
+    : undefined;
+  const actor = estado.juego.mano.mesa.jugadores.find((jugador) => jugador.id === accion.jugador);
+  return {
+    ...contexto,
+    puedeIniciarFueraDeTurnoPorTrucoPendiente:
+      !!propuesta &&
+      !!proponente &&
+      !!actor &&
+      actor.equipo !== proponente.equipo &&
+      estaActivo(estado.juego, actor.id),
+  };
+}
 export function obtenerContextoFlor(
   juego: EstadoJuegoCartas,
   contextoInicio: ContextoInicioMano,
@@ -630,11 +652,14 @@ function rechazo(codigo: string, mensaje: string) {
   return { aceptada: false as const, rechazo: { codigo, mensaje } };
 }
 function faseFlorConfirmable(estado: EstadoFlorDominio, contexto: ContextoFlor): boolean {
+  const ambosEquiposAnunciaron =
+    new Set(estado.anuncios.map((anuncio) => anuncio.equipo)).size === 2;
   return (
     !estado.cerrado &&
     !estado.pendiente &&
     !hayDerechosFlor(estado, contexto) &&
-    (estado.oportunidadDesafioConsumida ||
+    (!ambosEquiposAnunciaron ||
+      estado.oportunidadDesafioConsumida ||
       estado.historialDesafios.some((desafio) => desafio.respuesta !== null))
   );
 }
@@ -652,6 +677,29 @@ function anunciarFlorDentroDeConFlorQuiero(
       ? { ...contexto, jugadorTurno: jugador }
       : contexto;
   return anunciarFlor(estado, contextoDeAnuncio, jugador);
+}
+
+/** §7.3 v1.8: Flor puede responder una cadena pendiente de Envido sin mover el turno. */
+function anunciarFlorComoRespuestaEnvido(
+  estado: EstadoManoCoordinada,
+  contextoFlor: ContextoFlor,
+  jugador: string,
+) {
+  const pendiente = estado.envido.pendiente;
+  const participante = contextoFlor.jugadores.find((item) => item.id === jugador);
+  if (
+    !pendiente ||
+    !participante ||
+    !(participante.activa ?? true) ||
+    !estaActivo(estado.juego, jugador) ||
+    participante.equipo !== pendiente.equipoRespondedor
+  )
+    return null;
+  const contextoDeAnuncio =
+    estado.flor.anuncios.length === 0 && contextoFlor.jugadorTurno !== jugador
+      ? { ...contextoFlor, jugadorTurno: jugador }
+      : contextoFlor;
+  return anunciarFlor(estado.flor, contextoDeAnuncio, jugador);
 }
 function integrarResultadoFlor(estado: EstadoManoCoordinada, flor: EstadoFlorDominio) {
   const resultadoPartida = flor.resultadoTerminal
@@ -1467,7 +1515,15 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
     };
   }
   if (accion?.tipo === "anunciar-flor") {
-    const resultado = anunciarFlor(estado.flor, contextoFlor, accion.jugador);
+    const respuestaEnvido = estado.envido.pendiente
+      ? anunciarFlorComoRespuestaEnvido(estado, contextoFlor, accion.jugador)
+      : null;
+    if (estado.envido.pendiente && respuestaEnvido === null)
+      return rechazo(
+        "flor-envido-respondedor-invalido",
+        "Sólo el equipo respondedor puede anunciar Flor ante Envido pendiente.",
+      );
+    const resultado = respuestaEnvido ?? anunciarFlor(estado.flor, contextoFlor, accion.jugador);
     if (!resultado.aceptada) return rechazo(resultado.codigo, "AcciÃ³n de Flor rechazada.");
     const contextoCierre = obtenerContextoFlor(
       estado.juego,
@@ -1550,8 +1606,14 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
     );
   if (estado.flor.pendiente)
     return rechazo("flor-pendiente", "La Flor debe resolverse antes de Envido.");
+  const contextoEnvido = contextoEnvidoParaAccion(estado, contexto, accion);
   if (accion.tipo === "iniciar-envido") {
     const participante = contextoFlor.jugadores.find((jugador) => jugador.id === accion.jugador);
+    if (estado.flor.anuncios.length > 0)
+      return rechazo(
+        "flor-ya-anunciada",
+        "Una Flor anunciada impide proponer Envido en esta mano.",
+      );
     const conservaDerechoFlor =
       !!participante &&
       !participante.jugoPrimeraCarta &&
@@ -1560,20 +1622,18 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
       !estado.flor.derechosPerdidos.includes(participante.id);
     if (conservaDerechoFlor)
       return rechazo("flor-no-anunciada", "Debe anunciar Flor antes de proponer Envido.");
-    if (estado.flor.anuncios.length > 0 && !estado.flor.cerrado)
-      return rechazo("flor-prioritaria", "La fase de Flor tiene prioridad sobre Envido.");
   }
   const resultado =
     accion.tipo === "iniciar-envido"
-      ? iniciarEnvido(estado.envido, contexto, accion.jugador, accion.canto)
+      ? iniciarEnvido(estado.envido, contextoEnvido, accion.jugador, accion.canto)
       : accion.tipo === "aumentar-envido"
-        ? aumentarEnvidoEnJuego(estado.envido, contexto, accion.jugador, accion.canto)
+        ? aumentarEnvidoEnJuego(estado.envido, contextoEnvido, accion.jugador, accion.canto)
         : accion.tipo === "quiero-envido"
-          ? responderQuiero(estado.envido, contexto, accion.jugador)
-          : responderNoQuiero(estado.envido, contexto, accion.jugador);
+          ? responderQuiero(estado.envido, contextoEnvido, accion.jugador)
+          : responderNoQuiero(estado.envido, contextoEnvido, accion.jugador);
   if (!resultado.aceptada) return rechazo(resultado.codigo, "Acción de Envido rechazada.");
   const integrado = { ...estado, envido: resultado.estado };
-  if (!esEstadoEnvidoValido(integrado.envido, contexto))
+  if (!esEstadoEnvidoValido(integrado.envido, contextoEnvido))
     return rechazo("resultado-invalido", "Resultado de Envido inválido.");
   return { aceptada: true as const, estado: integrado, eventos: resultado.eventos };
 }

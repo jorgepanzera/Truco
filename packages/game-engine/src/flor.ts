@@ -485,6 +485,7 @@ type CierreFlor = Readonly<{
     tipo: string;
     equipo?: string;
     adjudicaciones?: readonly AdjudicacionFlor[];
+    tantos?: readonly Readonly<{ jugador: string; equipo: string; tanto: number }>[];
   }>[];
 }>;
 function contextoCoherente(contexto: ContextoFlor): boolean {
@@ -630,6 +631,7 @@ function adjudicar(
 ): Readonly<{
   adjudicaciones: readonly AdjudicacionFlor[];
   resultadoTerminal: EstadoFlorDominio["resultadoTerminal"];
+  tantos?: readonly Readonly<{ jugador: string; equipo: string; tanto: number }>[];
 }> {
   const equipos = [...new Set(contexto.jugadores.map((j) => j.equipo))];
   const floresPorEquipo = (equipo: string) =>
@@ -681,6 +683,7 @@ function adjudicar(
     return {
       adjudicaciones: [],
       resultadoTerminal: { tipo: "contra-flor-al-resto-ganada", equipo: determinante.equipo },
+      tantos,
     };
   const puntos =
     desafio.tipo === "contra-flor-al-resto" ? 3 : floresPorEquipo(determinante.equipo) * 3;
@@ -693,6 +696,7 @@ function adjudicar(
       ),
     ),
     resultadoTerminal: null,
+    tantos,
   };
 }
 function cerrar(estado: EstadoFlorDominio, contexto: ContextoFlor): CierreFlor {
@@ -708,8 +712,20 @@ function cerrar(estado: EstadoFlorDominio, contexto: ContextoFlor): CierreFlor {
   const eventos: CierreFlor["eventos"] = [
     ...(estado.cerrado ? [] : [{ tipo: "fase-flor-cerrada" }]),
     ...(resultado.resultadoTerminal
-      ? [{ tipo: "contra-flor-al-resto-victoria", equipo: resultado.resultadoTerminal.equipo }]
-      : [{ tipo: "flor-adjudicada", adjudicaciones: resultado.adjudicaciones }]),
+      ? [
+          {
+            tipo: "contra-flor-al-resto-victoria",
+            equipo: resultado.resultadoTerminal.equipo,
+            ...(resultado.tantos ? { tantos: resultado.tantos } : {}),
+          },
+        ]
+      : [
+          {
+            tipo: "flor-adjudicada",
+            adjudicaciones: resultado.adjudicaciones,
+            ...(resultado.tantos ? { tantos: resultado.tantos } : {}),
+          },
+        ]),
   ];
   return {
     estado: { ...estado, cerrado: true, ...resultado },
@@ -724,8 +740,19 @@ function anunciarFlorConExcepcionDeTurno(
 ): ResultadoFlor {
   if (!estadoCoherente(estado, contexto) || !contextoCoherente(contexto))
     return fallo("estado-flor-incoherente");
-  if (estado.cerrado) return fallo("fase-cerrada");
   const participante = contexto.jugadores.find((j) => j.id === jugador);
+  // Una fase ya cerrada no borra el hecho canónico de que este jugador tenía
+  // Flor y perdió su derecho al jugar la primera carta.
+  if (
+    estado.cerrado &&
+    participante &&
+    (participante.activa ?? true) &&
+    tieneFlorCalculada(participante.cartas, contexto.muestra) &&
+    !estado.anuncios.some((a) => a.jugador === jugador) &&
+    (estado.derechosPerdidos.includes(jugador) || participante.jugoPrimeraCarta)
+  )
+    return fallo("derecho-perdido");
+  if (estado.cerrado) return fallo("fase-cerrada");
   if (
     !participante ||
     !(participante.activa ?? true) ||

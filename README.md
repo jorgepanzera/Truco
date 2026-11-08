@@ -1,6 +1,6 @@
 # Truco Uruguayo
 
-Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos vigentes son el [Reglamento v1.6](docs/REGLAMENTO_TRUCO_URUGUAYO_v1.6.md) y la [Especificación Funcional v1.4](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md). El Reglamento prevalece para las reglas de juego; las versiones anteriores se conservan como antecedentes.
+Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos vigentes son el [Reglamento v1.8](docs/REGLAMENTO_TRUCO_URUGUAYO_v1.8.md) y la [Especificación Funcional v1.4](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md). El Reglamento prevalece para las reglas de juego; las versiones anteriores se conservan como antecedentes.
 
 La [arquitectura de la aplicación](docs/ARQUITECTURA.md) describe los módulos, sus dependencias y el estado de implementación.
 
@@ -90,6 +90,24 @@ Para ejecutar la prueba básica de renderizado y compilar para producción:
 npm.cmd run test:web
 npm.cmd run build
 ```
+
+### Desarrollo local de la interfaz (Fase 6C.7.1)
+
+El repositorio incluye Node 24 en `.local/node`. Con dos terminales abiertas en la raíz, ejecutar primero el servidor:
+
+```powershell
+& .\.local\node\node.exe .\node_modules\prisma\build\index.js generate --schema apps/server/prisma/schema.prisma
+& .\.local\node\node.exe .\node_modules\typescript\bin\tsc --build
+& .\.local\node\node.exe .\apps\server\dist\main.js
+```
+
+En la segunda terminal, iniciar Vite:
+
+```powershell
+& .\.local\node\node.exe .\node_modules\vite\bin\vite.js apps/web
+```
+
+Abrir la URL que informa Vite (habitualmente `http://localhost:5173`), ingresar un apodo y crear la partida. Vite reenvía `/api` y el WebSocket `/ws` a `127.0.0.1:3000`, por lo que no hace falta configurar CORS ni un proxy externo. El cliente usa rutas del mismo origen por defecto; no definir `VITE_SERVER_URL` durante esta prueba local.
 
 La pantalla solo comunica que el proyecto está en preparación. Las futuras cartas visuales se incorporarán en la Etapa 3 como imágenes de una baraja española tradicional ilustrada de 40 cartas, con dorso común y licencia de uso adecuada.
 
