@@ -16,6 +16,84 @@ function marcadorDe(snapshot: SnapshotIniciado, asiento: number): number {
   return snapshot.marcador.find((item) => item.asiento === asiento)?.puntos ?? 0;
 }
 
+function GrupoPalitos({ puntos }: Readonly<{ puntos: number }>) {
+  const trazos = [
+    [2, 2, 18, 2],
+    [18, 2, 18, 18],
+    [18, 18, 2, 18],
+    [2, 18, 2, 2],
+    [2.5, 17.5, 17.5, 2.5],
+  ] as const;
+  return (
+    <svg
+      aria-label={`${puntos} punto${puntos === 1 ? "" : "s"} en este grupo`}
+      className="palito-grupo"
+      role="img"
+      viewBox="0 0 20 20"
+    >
+      {trazos.slice(0, puntos).map(([x1, y1, x2, y2], indice) => (
+        <line key={indice} x1={x1} x2={x2} y1={y1} y2={y2} />
+      ))}
+    </svg>
+  );
+}
+
+function PalitosPorTramo({ etiqueta, puntos }: Readonly<{ etiqueta: string; puntos: number }>) {
+  const grupos = Array.from({ length: Math.ceil(puntos / 5) }, (_, indice) =>
+    Math.min(5, puntos - indice * 5),
+  );
+  return (
+    <section aria-label={`${etiqueta}: ${puntos} puntos`} className="tanteador__tramo">
+      <h3>{etiqueta}</h3>
+      <div className="tanteador__grupos">
+        {grupos.map((puntosGrupo, indice) => (
+          <GrupoPalitos key={indice} puntos={puntosGrupo} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Representación visual del marcador autoritativo; no conserva estado ni puntúa. */
+export function TanteadorPalitos({ snapshot }: Readonly<{ snapshot: SnapshotIniciado }>) {
+  const mitad = snapshot.metaPuntos / 2;
+  const equipos = snapshot.participantes.reduce<
+    ReadonlyArray<Readonly<{ id: string; participantes: typeof snapshot.participantes }>>
+  >((acumulado, participante) => {
+    const id = participante.equipo ?? `asiento-${participante.asiento}`;
+    const existente = acumulado.find((equipo) => equipo.id === id);
+    if (existente)
+      return acumulado.map((equipo) =>
+        equipo.id === id
+          ? { ...equipo, participantes: [...equipo.participantes, participante] }
+          : equipo,
+      );
+    return [...acumulado, { id, participantes: [participante] }];
+  }, []);
+  return (
+    <section aria-label="Tanteador tradicional" className="tanteador">
+      {equipos.map((equipo) => {
+        const participante = equipo.participantes[0]!;
+        const puntos = marcadorDe(snapshot, participante.asiento);
+        const malas = Math.min(puntos, mitad);
+        const buenas = Math.min(Math.max(0, puntos - mitad), mitad);
+        const excedente = Math.max(0, puntos - snapshot.metaPuntos);
+        return (
+          <section className="tanteador__equipo" key={equipo.id}>
+            <h2>{equipo.participantes.map((miembro) => miembro.apodo).join(" / ")}</h2>
+            <p>{puntos} pts</p>
+            <div className="tanteador__mitades">
+              <PalitosPorTramo etiqueta="Malas" puntos={malas} />
+              <PalitosPorTramo etiqueta="Buenas" puntos={buenas} />
+              {excedente > 0 ? <PalitosPorTramo etiqueta="Extra" puntos={excedente} /> : null}
+            </div>
+          </section>
+        );
+      })}
+    </section>
+  );
+}
+
 /** Traduce causas canónicas de cierre sin filtrar identificadores internos a la UI. */
 export function textoMotivoCierre(causa: string): string {
   const motivos: Record<string, string> = {
@@ -85,6 +163,81 @@ function textoResultadoBaza(
     : `La máquina ganó la baza ${indice}.`;
 }
 
+function nombreEquipo(equipo: string): string {
+  const coincidencia = /^equipo-(\d+)$/.exec(equipo);
+  return coincidencia ? `Equipo ${Number(coincidencia[1]) + 1}` : `Equipo ${equipo}`;
+}
+
+function CartasComprobacion({ cartas }: Readonly<{ cartas: readonly CartaModelo[] }>) {
+  return (
+    <div className="comprobacion__cartas" aria-label="Cartas para comprobación">
+      {cartas.map((carta, indice) => (
+        <Carta carta={carta} key={`${carta.valor}-${carta.palo}-${indice}`} />
+      ))}
+    </div>
+  );
+}
+
+function ComprobacionCierre({
+  comprobacion,
+  snapshot,
+}: Readonly<{
+  comprobacion: NonNullable<NonNullable<SnapshotIniciado["ultimoCierre"]>["comprobacion"]>;
+  snapshot: SnapshotIniciado;
+}>) {
+  const flor = comprobacion.flor;
+  const envido = comprobacion.envido;
+  if (!flor && !envido) return null;
+  const textoFlor =
+    flor?.resultado === "comparada"
+      ? `Comparación aceptada${flor.asientoGanador === undefined ? "." : `. Ganó ${nombreDe(snapshot, flor.asientoGanador)}.`}`
+      : flor?.resultado === "rechazo"
+        ? `${flor.desafio === "contra-flor-al-resto" ? "Contra Flor al Resto" : "Contra Flor"} rechazada: se comprueba la existencia de las Flores anunciadas; no hubo comparación de valores.`
+        : "Flores anunciadas comprobadas. No hubo comparación de valores.";
+  return (
+    <section className="comprobacion" aria-label="Comprobación de Flor y Envido">
+      <h3>Comprobación de Flor y Envido</h3>
+      {flor ? (
+        <section className="comprobacion__bloque" aria-label="Comprobación de Flor">
+          <h4>Comprobación de Flor</h4>
+          {flor.participantes.map((participante) => (
+            <article className="comprobacion__participante" key={participante.asiento}>
+              <p>
+                {nombreDe(snapshot, participante.asiento)} — {nombreEquipo(participante.equipo)}
+                {participante.tanto === undefined
+                  ? " — Flor anunciada"
+                  : ` — Flor: ${participante.tanto}`}
+              </p>
+              <CartasComprobacion cartas={participante.cartas} />
+            </article>
+          ))}
+          <p className="comprobacion__resultado">{textoFlor}</p>
+        </section>
+      ) : null}
+      {envido ? (
+        <section className="comprobacion__bloque" aria-label="Comprobación de Envido">
+          <h4>Comprobación de Envido</h4>
+          {envido.participantes.map((participante) => (
+            <article className="comprobacion__participante" key={participante.asiento}>
+              <p>
+                {nombreDe(snapshot, participante.asiento)} — {nombreEquipo(participante.equipo)} —
+                Envido: {participante.tanto}
+              </p>
+              <CartasComprobacion cartas={participante.cartas} />
+            </article>
+          ))}
+          <p className="comprobacion__resultado">
+            Comparación aceptada. Ganó {nombreDe(snapshot, envido.asientoGanador)}
+            {envido.asientoGanador === envido.asientoDeterminante
+              ? "."
+              : `; definió ${nombreDe(snapshot, envido.asientoDeterminante)}.`}
+          </p>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
 function PanelCierre({
   cierre,
   snapshot,
@@ -118,6 +271,9 @@ function PanelCierre({
           />
         ))}
       </div>
+      {cierre.comprobacion ? (
+        <ComprobacionCierre comprobacion={cierre.comprobacion} snapshot={snapshot} />
+      ) : null}
       <button
         disabled={snapshot.continuacion?.confirmadaPropia}
         type="button"
@@ -155,6 +311,12 @@ function PanelPartidaFinalizada({
             .map((jugador) => `${jugador.apodo}: ${marcadorDe(snapshot, jugador.asiento)}`)
             .join(" — ")}
         </p>
+        {snapshot.ultimoCierre?.comprobacion ? (
+          <ComprobacionCierre
+            comprobacion={snapshot.ultimoCierre.comprobacion}
+            snapshot={snapshot}
+          />
+        ) : null}
         <button disabled={reiniciando} type="button" onClick={onJugarOtra}>
           {reiniciando ? "Creando partida…" : "Jugar otra partida"}
         </button>
@@ -246,13 +408,21 @@ function textoEvento(
   if (evento.tipo === "mano-cerrada") {
     const adjudicacion = evento.adjudicaciones?.find((item) => item.puntos > 0);
     const ganador = evento.asientoGanador ?? adjudicacion?.asientoGanador;
+    const nivelTruco =
+      evento.nivelTruco === "truco"
+        ? "Truco"
+        : evento.nivelTruco === "retruco"
+          ? "Retruco"
+          : evento.nivelTruco === "vale-cuatro"
+            ? "Vale Cuatro"
+            : null;
     const razon =
       adjudicacion?.causa === "rechazo-truco"
         ? " por rechazo del Truco"
         : adjudicacion?.causa === "mazo"
           ? " por retiro al mazo"
           : adjudicacion?.causa === "bazas"
-            ? " por bazas"
+            ? ` por bazas${nivelTruco ? ` con ${nivelTruco}` : ""}`
             : "";
     const puntos = adjudicacion
       ? ` (+${adjudicacion.puntos} punto${adjudicacion.puntos === 1 ? "" : "s"})`
@@ -398,7 +568,11 @@ function Historial({
           Cerrar
         </button>
       </header>
-      <div className="historial-publico__desplazable" onScroll={actualizarSeguimiento} ref={desplazable}>
+      <div
+        className="historial-publico__desplazable"
+        onScroll={actualizarSeguimiento}
+        ref={desplazable}
+      >
         {manos.length ? (
           manos.map((mano) => {
             const tieneCierre = mano.eventos.some((evento) => evento.tipo === "mano-cerrada");
@@ -444,6 +618,41 @@ function Historial({
   );
 }
 
+function PanelLateral({
+  snapshot,
+  historial,
+  historialAbierto,
+  onAlternarHistorial,
+  onCerrarHistorial,
+}: Readonly<{
+  snapshot: SnapshotIniciado;
+  historial: readonly EventoPublico[];
+  historialAbierto: boolean;
+  onAlternarHistorial: () => void;
+  onCerrarHistorial: () => void;
+}>) {
+  return (
+    <aside className="panel-lateral" aria-label="Tanteador e historial">
+      <TanteadorPalitos snapshot={snapshot} />
+      <button
+        aria-controls="historial-partida"
+        aria-expanded={historialAbierto}
+        className="historial-toggle"
+        onClick={onAlternarHistorial}
+        type="button"
+      >
+        Historial
+      </button>
+      <Historial
+        abierto={historialAbierto}
+        historial={historial}
+        onCerrar={onCerrarHistorial}
+        snapshot={snapshot}
+      />
+    </aside>
+  );
+}
+
 export function MesaDeTruco({
   snapshot,
   onJugarCarta,
@@ -478,19 +687,11 @@ export function MesaDeTruco({
           onJugarOtra={onJugarOtra}
           reiniciando={creando}
         />
-        <button
-          aria-controls="historial-partida"
-          aria-expanded={historialAbierto}
-          className="historial-toggle"
-          onClick={() => setHistorialAbierto((abierto) => !abierto)}
-          type="button"
-        >
-          Historial
-        </button>
-        <Historial
-          abierto={historialAbierto}
+        <PanelLateral
           historial={historial}
-          onCerrar={() => setHistorialAbierto(false)}
+          historialAbierto={historialAbierto}
+          onAlternarHistorial={() => setHistorialAbierto((abierto) => !abierto)}
+          onCerrarHistorial={() => setHistorialAbierto(false)}
           snapshot={snapshot}
         />
       </div>
@@ -524,109 +725,103 @@ export function MesaDeTruco({
   return (
     <div className="mesa-distribucion">
       <section className="mesa" aria-label="Mesa de Truco">
-      <header className="mesa__cabecera">
-        <span>Mano en curso</span>
-        <span>
-          {cartasMostradas} carta{cartasMostradas === 1 ? "" : "s"} pública
-          {cartasMostradas === 1 ? "" : "s"} en mesa
-        </span>
-      </header>
-      <Jugador
-        clase="jugador--rival"
-        nombre={nombreRival}
-        puntos={puntosRival}
-        activo={turnoRival}
-      />
-      <div className="mano-rival" aria-label="Cartas de la máquina ocultas">
-        {Array.from({ length: snapshot.cartasRivalesRestantes }, (_, indice) => (
-          <DorsoCarta key={indice} />
-        ))}
-      </div>
-      <section className="centro-mesa" aria-label="Centro de la mesa">
-        <div className="muestra">
-          <span className="muestra__titulo">Muestra</span>
-          <Carta carta={snapshot.muestra} />
+        <header className="mesa__cabecera">
+          <span>Mano en curso</span>
+          <span>
+            {cartasMostradas} carta{cartasMostradas === 1 ? "" : "s"} pública
+            {cartasMostradas === 1 ? "" : "s"} en mesa
+          </span>
+        </header>
+        <Jugador
+          clase="jugador--rival"
+          nombre={nombreRival}
+          puntos={puntosRival}
+          activo={turnoRival}
+        />
+        <div className="mano-rival" aria-label="Cartas de la máquina ocultas">
+          {Array.from({ length: snapshot.cartasRivalesRestantes }, (_, indice) => (
+            <DorsoCarta key={indice} />
+          ))}
         </div>
-        <div className="zona-jugadas">
-          <span className="zona-jugadas__titulo">Bazas</span>
-          <div className="bazas-completadas">
-            {snapshot.bazasCompletadas.map((baza, indice) => (
-              <div className="anuncio-baza" key={indice}>
-                <p>{textoResultadoBaza(baza, snapshot.asientoPropio, indice + 1)}</p>
-                <Baza
-                  baza={baza}
-                  asientoPropio={snapshot.asientoPropio}
-                  titulo={`Baza ${indice + 1} completada`}
-                />
-              </div>
-            ))}
+        <section className="centro-mesa" aria-label="Centro de la mesa">
+          <div className="muestra">
+            <span className="muestra__titulo">Muestra</span>
+            <Carta carta={snapshot.muestra} />
           </div>
-          <Baza
-            baza={snapshot.bazaActual}
-            asientoPropio={snapshot.asientoPropio}
-            titulo="Baza en curso"
-          />
-          {cartasMostradas === 0 ? (
-            <p className="mesa__sin-cartas">Aún no hay cartas jugadas.</p>
-          ) : null}
+          <div className="zona-jugadas">
+            <span className="zona-jugadas__titulo">Bazas</span>
+            <div className="bazas-completadas">
+              {snapshot.bazasCompletadas.map((baza, indice) => (
+                <div className="anuncio-baza" key={indice}>
+                  <p>{textoResultadoBaza(baza, snapshot.asientoPropio, indice + 1)}</p>
+                  <Baza
+                    baza={baza}
+                    asientoPropio={snapshot.asientoPropio}
+                    titulo={`Baza ${indice + 1} completada`}
+                  />
+                </div>
+              ))}
+            </div>
+            <Baza
+              baza={snapshot.bazaActual}
+              asientoPropio={snapshot.asientoPropio}
+              titulo="Baza en curso"
+            />
+            {cartasMostradas === 0 ? (
+              <p className="mesa__sin-cartas">Aún no hay cartas jugadas.</p>
+            ) : null}
+          </div>
+        </section>
+        {avisoPendiente ? <p className="mesa__desafio">{avisoPendiente}</p> : null}
+        {anuncioActual ? (
+          <p aria-live="assertive" className="anuncio-evento">
+            {textoEvento(snapshot, anuncioActual)}
+          </p>
+        ) : null}
+        {onAccion ? (
+          <div className="acciones" aria-label="Acciones disponibles">
+            {snapshot.accionesDisponibles
+              .filter((accion) => accion.type !== "play-card")
+              .map((accion, indice) => (
+                <button
+                  disabled={accionPendiente || Boolean(cierreMostrado)}
+                  key={`${accion.type}-${indice}`}
+                  onClick={() => onAccion(accion)}
+                  type="button"
+                >
+                  {etiquetaAccion(accion)}
+                </button>
+              ))}
+          </div>
+        ) : null}
+        {accionPendiente ? (
+          <p className="mesa__aviso">Esperando confirmación de la jugada.</p>
+        ) : null}
+        {cierreMostrado && onContinuar ? (
+          <PanelCierre cierre={cierreMostrado} snapshot={snapshot} onContinuar={onContinuar} />
+        ) : null}
+        <Jugador
+          clase="jugador--propio"
+          nombre={nombreDe(snapshot, snapshot.asientoPropio)}
+          puntos={marcadorDe(snapshot, snapshot.asientoPropio)}
+          activo={turnoPropio}
+        />
+        <div className="mano-propia" aria-label="Tus cartas">
+          {snapshot.cartasPropias.map((carta) => (
+            <Carta
+              carta={carta}
+              deshabilitada={!puedeJugar || !cartaEsLegal(carta)}
+              key={`${carta.valor}-${carta.palo}`}
+              onSeleccionar={onJugarCarta}
+            />
+          ))}
         </div>
       </section>
-      {avisoPendiente ? <p className="mesa__desafio">{avisoPendiente}</p> : null}
-      {anuncioActual ? (
-        <p aria-live="assertive" className="anuncio-evento">
-          {textoEvento(snapshot, anuncioActual)}
-        </p>
-      ) : null}
-      {onAccion ? (
-        <div className="acciones" aria-label="Acciones disponibles">
-          {snapshot.accionesDisponibles
-            .filter((accion) => accion.type !== "play-card")
-            .map((accion, indice) => (
-              <button
-                disabled={accionPendiente || Boolean(cierreMostrado)}
-                key={`${accion.type}-${indice}`}
-                onClick={() => onAccion(accion)}
-                type="button"
-              >
-                {etiquetaAccion(accion)}
-              </button>
-            ))}
-        </div>
-      ) : null}
-      {accionPendiente ? <p className="mesa__aviso">Esperando confirmación de la jugada.</p> : null}
-      {cierreMostrado && onContinuar ? (
-        <PanelCierre cierre={cierreMostrado} snapshot={snapshot} onContinuar={onContinuar} />
-      ) : null}
-      <Jugador
-        clase="jugador--propio"
-        nombre={nombreDe(snapshot, snapshot.asientoPropio)}
-        puntos={marcadorDe(snapshot, snapshot.asientoPropio)}
-        activo={turnoPropio}
-      />
-      <div className="mano-propia" aria-label="Tus cartas">
-        {snapshot.cartasPropias.map((carta) => (
-          <Carta
-            carta={carta}
-            deshabilitada={!puedeJugar || !cartaEsLegal(carta)}
-            key={`${carta.valor}-${carta.palo}`}
-            onSeleccionar={onJugarCarta}
-          />
-        ))}
-      </div>
-      </section>
-      <button
-        aria-controls="historial-partida"
-        aria-expanded={historialAbierto}
-        className="historial-toggle"
-        onClick={() => setHistorialAbierto((abierto) => !abierto)}
-        type="button"
-      >
-        Historial
-      </button>
-      <Historial
-        abierto={historialAbierto}
+      <PanelLateral
         historial={historial}
-        onCerrar={() => setHistorialAbierto(false)}
+        historialAbierto={historialAbierto}
+        onAlternarHistorial={() => setHistorialAbierto((abierto) => !abierto)}
+        onCerrarHistorial={() => setHistorialAbierto(false)}
         snapshot={snapshot}
       />
     </div>

@@ -7,8 +7,13 @@ import {
   crearMazo,
   esCicloCoherenteConEstado,
   esEstadoCicloManoValido,
+  esEstadoEnvidoValido,
+  esEstadoFlorValido,
+  esEstadoJuegoCartasValido,
   ejecutarAccionCoordinada,
   iniciarJuegoCartas,
+  obtenerContextoEnvido,
+  obtenerContextoFlor,
   prepararMano,
 } from "../dist/index.js";
 
@@ -71,6 +76,101 @@ function baseSinFlor() {
     c("oro", 7),
   );
 }
+
+test("regresión: mazo tras Flor que canceló Envido y Truco aceptado conserva ambas adjudicaciones", () => {
+  let estado = estadoConManos(
+    [
+      [c("espada", 1), c("copa", 6), c("copa", 7)],
+      [c("oro", 1), c("oro", 3), c("oro", 6)],
+    ],
+    c("basto", 7),
+  ).estado;
+  const aplicar = (accion) => {
+    const resultado = ejecutarAccionCoordinada(estado, accion);
+    assert.equal(resultado.aceptada, true, resultado.aceptada ? "" : resultado.rechazo.codigo);
+    estado = resultado.estado;
+    return resultado;
+  };
+
+  aplicar({ tipo: "iniciar-envido", jugador: "a", canto: "envido" });
+  const flor = aplicar({ tipo: "anunciar-flor", jugador: "b" });
+  assert.equal(estado.envido.pendiente, null);
+  assert.deepEqual(estado.envido.cancelacionPorFlor, {
+    causa: "cancelado-por-flor",
+    jugadorFlor: "b",
+    equipoFlor: "B",
+    historial: [{ jugador: "a", equipo: "A", canto: "envido" }],
+  });
+  assert.deepEqual(estado.flor.adjudicaciones, [
+    { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+  ]);
+  assert.ok(flor.eventos.some((evento) => evento.tipo === "envido-cancelado-por-flor"));
+
+  aplicar({ tipo: "jugar-carta", jugador: "a", carta: c("copa", 7) });
+  aplicar({ tipo: "proponer-truco", jugador: "b" });
+  aplicar({ tipo: "quiero-truco", jugador: "a" });
+  aplicar({ tipo: "jugar-carta", jugador: "b", carta: c("oro", 3) });
+  aplicar({ tipo: "jugar-carta", jugador: "b", carta: c("oro", 6) });
+
+  const retiro = aplicar({ tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(retiro.estado.liquidacionMazo?.puntos, "pendiente");
+  assert.equal(retiro.estado.envido.cancelacionPorFlor?.causa, "cancelado-por-flor");
+  assert.deepEqual(retiro.estado.flor.adjudicaciones, estado.flor.adjudicaciones);
+  assert.equal(esEstadoJuegoCartasValido(estado.juego), true, "juego");
+  assert.equal(
+    esCicloCoherenteConEstado(
+      estado.ciclo,
+      estado.juego,
+      estado.resultadoPartida,
+      estado.liquidacionMazo,
+      estado.flor,
+      estado.truco,
+      estado.envido,
+      estado.adjudicacionTruco,
+    ),
+    true,
+    "ciclo",
+  );
+  assert.equal(
+    esEstadoEnvidoValido(estado.envido, obtenerContextoEnvido(estado.juego, estado.contextoInicio)),
+    true,
+    "envido",
+  );
+  assert.equal(
+    esEstadoFlorValido(estado.flor, obtenerContextoFlor(estado.juego, estado.contextoInicio)),
+    true,
+    "flor",
+  );
+  const liquidacion = ejecutarAccionCoordinada(estado, { tipo: "liquidar-puntos-mazo" });
+  assert.equal(
+    liquidacion.aceptada,
+    true,
+    liquidacion.aceptada
+      ? ""
+      : `${liquidacion.rechazo.codigo}: ${JSON.stringify({
+          adjudicacionTruco: estado.adjudicacionTruco,
+          flor: estado.flor,
+          envido: estado.envido,
+          retirados: estado.juego.retirados,
+          liquidacionMazo: estado.liquidacionMazo,
+          propuestaTruco: estado.truco.propuestaPendiente,
+        })}`,
+  );
+  assert.equal(liquidacion.estado.adjudicacionTruco?.puntos, 2);
+  assert.equal(liquidacion.eventos.filter((evento) => evento.tipo === "mazo-adjudicado").length, 1);
+  assert.equal(liquidacion.estado.envido.cancelacionPorFlor?.causa, "cancelado-por-flor");
+  assert.deepEqual(liquidacion.estado.flor.adjudicaciones, [
+    { equipo: "A", puntos: 0, motivo: "sin-desafio" },
+    { equipo: "B", puntos: 3, motivo: "sin-desafio" },
+  ]);
+  const liquidacionRepetida = ejecutarAccionCoordinada(liquidacion.estado, {
+    tipo: "liquidar-puntos-mazo",
+  });
+  assert.equal(liquidacionRepetida.aceptada, false);
+  if (!liquidacionRepetida.aceptada)
+    assert.equal(liquidacionRepetida.rechazo.codigo, "liquidacion-mazo-no-disponible");
+});
 
 test("mazo registra oportunidad excepcional solo para ganador con Flor pendiente", () => {
   const conFlor = estadoConManos(

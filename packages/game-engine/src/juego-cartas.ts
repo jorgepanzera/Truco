@@ -431,7 +431,15 @@ export function esEstadoJuegoCartasValido(estado: EstadoJuegoCartas): boolean {
       return estado.jugadorTurno === null && estado.bazaActual.jugadas.length === 0;
     }
     const orden = ordenBaza(estado.mano.mesa, salida, estado.retirados, estado.bazaActual.jugadas);
-    if (estado.bazaActual.salida !== salida || estado.bazaActual.jugadas.length >= orden.length)
+    // Al retirarse un jugador con una baza en curso, la carta ya jugada por el rival
+    // queda como antecedente de la mano clausurada. Al excluir al retirado del orden,
+    // esa baza puede quedar completa para el orden residual, aunque no debe resolverse.
+    const bazaInterrumpidaPorMazo = estado.finalizada && estado.motivoFinalizacion === "mazo";
+    if (
+      estado.bazaActual.salida !== salida ||
+      estado.bazaActual.jugadas.length > orden.length ||
+      (!bazaInterrumpidaPorMazo && estado.bazaActual.jugadas.length === orden.length)
+    )
       return false;
     if (estado.bazaActual.jugadas.some((jugada, indice) => jugada.jugador !== orden[indice]))
       return false;

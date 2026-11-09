@@ -18,6 +18,22 @@ Iniciar Vite como siempre, crear una partida contra la máquina y pulsar **Envid
 20. Jugar varias manos: los anuncios nuevos no se repiten al llegar snapshots sucesivos y las acciones de la nueva mano usan la versión actual del servidor.
 21. Verificar que el historial separa cada bloque por `mano-N`: una adjudicación de Envido o Truco y el posterior cierre de esa misma mano son información distinta; el marcador sólo debe reflejar el snapshot autoritativo acumulado.
 
+## Comprobación pública de Flor y Envido al cierre
+
+22. Reproducir una mano con Flor anunciada (por ejemplo, una Flor de Jorge y otra de Máquina) y terminar la mano por rechazo de Contra Flor o por bazas. Antes del cierre no deben aparecer cartas privadas adicionales. En el panel de cierre debe aparecer **Comprobación de Flor y Envido**, con las tres cartas de cada Flor anunciada, el jugador y su equipo.
+23. Si Contra Flor fue rechazada, comprobar que el resultado dice expresamente que se verifican las Flores anunciadas y que **no hubo comparación de valores**; no debe atribuir a quien cobró la Flor más alta.
+24. En una mano con Envido aceptado, terminar la mano (por bazas, rechazo posterior de Truco o mazo). El panel de cierre debe mostrar los participantes que compararon, sus tres cartas y tantos, además del resultado autoritativo. No debe aparecer esta sección antes del cierre.
+25. Repetir el escenario `envido-rechazado`: al cierre no se deben mostrar cartas ni tantos como comprobación de Envido. Si también se anunció una Flor legítima, sí deben mostrarse exclusivamente las cartas correspondientes a esa Flor.
+26. Mantener el cuadro de cierre abierto y recibir snapshots repetidos o reconectar: la comprobación debe conservar exactamente las mismas cartas y no duplicar el tanteador, adjudicaciones ni bloques de comprobación. En una mano que termina el partido, la información permanece visible junto al resultado final.
+
+## Tanteador tradicional y avisos
+
+27. Comprobar que sobre la mesa aparecen dos columnas de tanteador, una por participante, con el puntaje numérico y las secciones **Malas** y **Buenas**. Cada cinco puntos debe completar un cuadrado de cuatro trazos y una diagonal; los grupos se apilan verticalmente.
+28. Verificar progresivamente puntajes 1 a 5 y 6 a 10: cada punto agrega exactamente un trazo y el quinto agrega la diagonal. En partida a 30, al llegar a 15 se completa Malas y los puntos siguientes se agregan en Buenas; en partida a 40, Malas se completa al llegar a 20 y luego se agregan las marcas de Buenas.
+29. En un empate de desempate o un marcador superior a la meta, comprobar que no se reinician ni truncan los palitos: el puntaje exacto sigue visible y los puntos excedentes se muestran en **Extra**.
+30. Mantener abierto el cierre de mano y el resultado final del partido: el tanteador debe seguir visible junto al puntaje numérico autoritativo.
+31. Provocar la cancelación de Envido por Flor. El historial debe contener **El Envido se canceló por Flor**, pero no debe ocupar la notificación central; los avisos centrales de Truco, Flor y otros cantos deben continuar apareciendo.
+
 ## Requisitos e inicio
 
 - Windows con PowerShell, Node 24.20.0 en `.local/node` y dependencias instaladas con `npm ci`.
@@ -32,6 +48,7 @@ Abrir dos terminales en la raíz. En la primera:
 ```
 
 o este equivalente
+
 ```powershell
 & .\.local\node\node.exe .\node_modules\prisma\build\index.js generate --schema apps/server/prisma/schema.prisma; if ($LASTEXITCODE -ne 0) { throw "Error generando Prisma" }; & .\.local\node\node.exe .\node_modules\typescript\bin\tsc --build; if ($LASTEXITCODE -ne 0) { throw "Error compilando TypeScript" }; & .\.local\node\node.exe .\apps\server\dist\main.js
 ```

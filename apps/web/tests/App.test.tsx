@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App.js";
 import { Carta } from "../src/Carta.js";
-import { textoMotivoCierre } from "../src/MesaDeTruco.js";
+import { TanteadorPalitos, textoMotivoCierre } from "../src/MesaDeTruco.js";
 
 class SocketDePrueba {
   static instancias: SocketDePrueba[] = [];
@@ -111,6 +111,32 @@ async function iniciar(container: HTMLElement) {
   });
 }
 
+async function renderizarTanteador(
+  puntosPropios: number,
+  puntosRivales: number,
+  metaPuntos: 30 | 40,
+) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  await act(async () =>
+    root.render(
+      <TanteadorPalitos
+        snapshot={{
+          ...snapshotIniciado(1),
+          metaPuntos,
+          marcador: [
+            { asiento: 0, puntos: puntosPropios },
+            { asiento: 1, puntos: puntosRivales },
+          ],
+        }}
+      />,
+    ),
+  );
+  return { container, root };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -120,6 +146,95 @@ afterEach(() => {
 });
 
 describe("pantalla de partida", () => {
+  it("representa los puntos autoritativos con palitos progresivos", async () => {
+    for (const puntos of [0, 1, 2, 3, 4, 5, 6, 9, 10, 14, 15]) {
+      const { container, root } = await renderizarTanteador(puntos, 0, 30);
+      try {
+        expect(container.querySelectorAll(".palito-grupo line")).toHaveLength(puntos);
+        expect(container.textContent).toContain(`${puntos} pts`);
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+      }
+    }
+  });
+
+  it("separa Malas, Buenas y excedentes para metas 30 y 40", async () => {
+    const { container, root } = await renderizarTanteador(41, 40, 40);
+    try {
+      const equipoPropio = container.querySelectorAll(".tanteador__equipo")[0]!;
+      expect(
+        equipoPropio.querySelectorAll('[aria-label="Malas: 20 puntos"] .palito-grupo'),
+      ).toHaveLength(4);
+      expect(
+        equipoPropio.querySelectorAll('[aria-label="Buenas: 20 puntos"] .palito-grupo'),
+      ).toHaveLength(4);
+      expect(
+        equipoPropio.querySelectorAll('[aria-label="Extra: 1 puntos"] .palito-grupo'),
+      ).toHaveLength(1);
+      expect(container.textContent).toContain("41 pts");
+      expect(container.textContent).toContain("40 pts");
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+    const a30 = await renderizarTanteador(15, 19, 30);
+    try {
+      const equipoPropio = a30.container.querySelectorAll(".tanteador__equipo")[0]!;
+      expect(
+        equipoPropio.querySelectorAll('[aria-label="Malas: 15 puntos"] .palito-grupo'),
+      ).toHaveLength(3);
+      expect(
+        equipoPropio.querySelectorAll('[aria-label="Buenas: 0 puntos"] .palito-grupo'),
+      ).toHaveLength(0);
+    } finally {
+      await act(async () => a30.root.unmount());
+      a30.container.remove();
+    }
+  });
+
+  it("ubica el tanteador en el panel lateral y no lo duplica al cerrar la mano", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: snapshotIniciado(1) })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      expect(container.querySelector(".mesa > .tanteador")).toBeNull();
+      expect(container.querySelector(".panel-lateral > .tanteador")).not.toBeNull();
+      const socket = SocketDePrueba.instancias[0]!;
+      await act(async () => socket.abrir());
+      await act(async () => socket.recibir({ type: "auth.ok" }));
+      await act(async () =>
+        socket.recibir({
+          type: "game.snapshot",
+          snapshot: {
+            ...snapshotIniciado(2),
+            ultimoCierre: {
+              idMano: "mano-2",
+              version: 2,
+              asientoGanador: 0,
+              equipo: "equipo-0",
+              puntos: 1,
+              causa: "bazas",
+              bazas: [],
+            },
+          },
+        }),
+      );
+      expect(container.querySelector(".panel-cierre")).not.toBeNull();
+      expect(container.querySelector(".panel-cierre .tanteador")).toBeNull();
+      expect(container.querySelector(".panel-lateral > .tanteador")).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("traduce todas las causas conocidas del cierre de mano", () => {
     expect(textoMotivoCierre("bazas")).toBe("definición por bazas");
     expect(textoMotivoCierre("rechazo-truco")).toBe("rechazo del Truco");
@@ -627,7 +742,12 @@ describe("pantalla de partida", () => {
             ],
             resultadoPartida: { asientoGanador: 0 },
             eventosPublicos: [
-              { secuencia: 1, idMano: "mano-2", tipo: "contra-flor-al-resto-propuesta", asiento: 1 },
+              {
+                secuencia: 1,
+                idMano: "mano-2",
+                tipo: "contra-flor-al-resto-propuesta",
+                asiento: 1,
+              },
               {
                 secuencia: 2,
                 idMano: "mano-2",
@@ -649,6 +769,8 @@ describe("pantalla de partida", () => {
         }),
       );
       expect(container.querySelector('[aria-label="Partido finalizado"]')).not.toBeNull();
+      expect(container.querySelector(".panel-partida-finalizada .tanteador")).toBeNull();
+      expect(container.querySelector(".panel-lateral > .tanteador")).not.toBeNull();
       expect(container.textContent).toContain("¡Ganaste el partido!");
       expect(container.textContent).toContain("Ana: 31 — Máquina: 29");
       expect(container.textContent).not.toContain("Continuar");
@@ -1049,6 +1171,192 @@ describe("pantalla de partida", () => {
       );
       expect(container.textContent).toContain("Tanteador al cierre: Ana 18 – Máquina 12.");
       expect(container.querySelectorAll(".historial-publico__evento--tanteador")).toHaveLength(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("conserva la cancelación de Envido por Flor en historial, no en el aviso central", async () => {
+    vi.useFakeTimers();
+    const eventos = [
+      { secuencia: 1, idMano: "mano-2", tipo: "envido-cancelado-por-flor" },
+      { secuencia: 2, idMano: "mano-2", tipo: "truco-propuesto", asiento: 1 },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(
+          respuesta({ snapshot: { ...snapshotIniciado(1), eventosPublicos: eventos } }),
+        ),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      expect(container.textContent).toContain("El Envido se canceló por Flor.");
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
+        "Máquina cantó Truco.",
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.querySelector(".anuncio-evento")).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it("encola Retruco y Vale Cuatro sin perder respuestas automáticas y separa el cierre", async () => {
+    vi.useFakeTimers();
+    const eventos = [
+      { secuencia: 1, idMano: "mano-2", tipo: "flor-adjudicada", asientoGanador: 1 },
+      {
+        secuencia: 2,
+        idMano: "mano-2",
+        tipo: "retruco-propuesto",
+        asiento: 0,
+        nivelTruco: "retruco",
+      },
+      {
+        secuencia: 3,
+        idMano: "mano-2",
+        tipo: "retruco-aceptado",
+        asiento: 1,
+        nivelTruco: "retruco",
+      },
+      {
+        secuencia: 4,
+        idMano: "mano-2",
+        tipo: "vale-cuatro-propuesto",
+        asiento: 1,
+        nivelTruco: "vale-cuatro",
+      },
+      {
+        secuencia: 5,
+        idMano: "mano-2",
+        tipo: "vale-cuatro-aceptado",
+        asiento: 0,
+        nivelTruco: "vale-cuatro",
+      },
+      {
+        secuencia: 6,
+        idMano: "mano-2",
+        tipo: "mano-cerrada",
+        asientoGanador: 1,
+        nivelTruco: "retruco",
+        adjudicaciones: [{ asientoGanador: 1, puntos: 3, causa: "bazas" }],
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(
+          respuesta({ snapshot: { ...snapshotIniciado(1), eventosPublicos: eventos } }),
+        ),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
+        "Ana cantó Retruco.",
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
+        "Máquina aceptó el Retruco.",
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
+        "Máquina cantó Vale Cuatro.",
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
+        "Ana aceptó el Vale Cuatro.",
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.textContent).toContain(
+        "Máquina ganó la mano por bazas con Retruco (+3 puntos).",
+      );
+      expect(container.querySelectorAll(".historial-publico li")).toHaveLength(6);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it("muestra la comprobación autoritativa sólo al cerrar la mano", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: snapshotIniciado(1) })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      expect(container.textContent).not.toContain("Comprobación de Flor y Envido");
+      const socket = SocketDePrueba.instancias[0]!;
+      await act(async () => socket.abrir());
+      await act(async () => socket.recibir({ type: "auth.ok" }));
+      await act(async () =>
+        socket.recibir({
+          type: "game.snapshot",
+          snapshot: {
+            ...snapshotIniciado(2),
+            ultimoCierre: {
+              idMano: "mano-2",
+              version: 2,
+              asientoGanador: 0,
+              equipo: "equipo-0",
+              puntos: 3,
+              causa: "bazas",
+              bazas: [],
+              comprobacion: {
+                flor: {
+                  resultado: "rechazo",
+                  desafio: "contra-flor",
+                  participantes: [
+                    {
+                      asiento: 0,
+                      equipo: "equipo-0",
+                      cartas: [
+                        { valor: 1, palo: "oro" },
+                        { valor: 2, palo: "oro" },
+                        { valor: 3, palo: "oro" },
+                      ],
+                    },
+                  ],
+                },
+                envido: {
+                  participantes: [
+                    {
+                      asiento: 0,
+                      equipo: "equipo-0",
+                      cartas: [
+                        { valor: 7, palo: "copa" },
+                        { valor: 6, palo: "copa" },
+                        { valor: 4, palo: "basto" },
+                      ],
+                      tanto: 33,
+                    },
+                  ],
+                  asientoGanador: 0,
+                  asientoDeterminante: 0,
+                },
+              },
+            },
+          },
+        }),
+      );
+      expect(container.textContent).toContain("Comprobación de Flor y Envido");
+      expect(container.textContent).toContain("no hubo comparación de valores");
+      expect(container.textContent).toContain("Envido: 33");
+      expect(container.querySelectorAll('[aria-label="Cartas para comprobación"]')).toHaveLength(2);
     } finally {
       await act(async () => root.unmount());
     }

@@ -15,8 +15,10 @@ import { textos } from "./textos.js";
 type CierreMostrado = NonNullable<Extract<SnapshotPartida, { estado: "iniciada" }>["ultimoCierre"]>;
 const DURACION_ANUNCIO_MS = 3000;
 const esAnuncioCentral = (evento: EventoPublico) =>
-  evento.tipo.startsWith("envido-") ||
+  (evento.tipo.startsWith("envido-") && evento.tipo !== "envido-cancelado-por-flor") ||
   evento.tipo.startsWith("truco-") ||
+  evento.tipo.startsWith("retruco-") ||
+  evento.tipo.startsWith("vale-cuatro-") ||
   evento.tipo === "flor-anunciada" ||
   evento.tipo.startsWith("contra-flor-");
 

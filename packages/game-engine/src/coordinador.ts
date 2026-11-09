@@ -679,7 +679,7 @@ function anunciarFlorDentroDeConFlorQuiero(
   return anunciarFlor(estado, contextoDeAnuncio, jugador);
 }
 
-/** §7.3 v1.8: Flor puede responder una cadena pendiente de Envido sin mover el turno. */
+/** §7.3 v1.9: Flor puede responder una cadena pendiente de Envido sin mover el turno. */
 function anunciarFlorComoRespuestaEnvido(
   estado: EstadoManoCoordinada,
   contextoFlor: ContextoFlor,

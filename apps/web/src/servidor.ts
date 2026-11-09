@@ -28,7 +28,12 @@ export type AccionWeb =
         | "reject-vale-cuatro";
     }>;
 
-type Participante = Readonly<{ asiento: number; apodo: string; automatico?: boolean }>;
+type Participante = Readonly<{
+  asiento: number;
+  apodo: string;
+  automatico?: boolean;
+  equipo?: string;
+}>;
 export type JugadaPublica = Readonly<{ asiento: number; carta: Carta }>;
 export type BazaPublica = Readonly<{
   jugadas: readonly JugadaPublica[];
@@ -40,6 +45,7 @@ export type EventoPublico = Readonly<{
   tipo: string;
   asiento?: number;
   canto?: string;
+  nivelTruco?: string;
   asientoGanador?: number;
   adjudicaciones?: readonly Readonly<{ asientoGanador: number; puntos: number; causa?: string }>[];
   tantos?: readonly Readonly<{ asiento: number; tanto: number }>[];
@@ -89,6 +95,29 @@ type SnapshotIniciado = SnapshotBase &
       puntos: number;
       causa: string;
       bazas: readonly BazaPublica[];
+      comprobacion?: Readonly<{
+        flor?: Readonly<{
+          resultado: "sin-desafio" | "rechazo" | "comparada";
+          desafio?: "contra-flor" | "contra-flor-al-resto";
+          participantes: readonly Readonly<{
+            asiento: number;
+            equipo: string;
+            cartas: readonly Carta[];
+            tanto?: number;
+          }>[];
+          asientoGanador?: number;
+        }>;
+        envido?: Readonly<{
+          participantes: readonly Readonly<{
+            asiento: number;
+            equipo: string;
+            cartas: readonly Carta[];
+            tanto: number;
+          }>[];
+          asientoGanador: number;
+          asientoDeterminante: number;
+        }>;
+      }>;
     }> | null;
   }>;
 
