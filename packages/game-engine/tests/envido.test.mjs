@@ -68,6 +68,50 @@ test("coordinador bloquea cartas y conserva turno", () => {
   assert.equal(ejecutarAccionCoordinada(q.estado, carta).aceptada, true);
 });
 
+test("las respuestas explícitas de Envido conservan al jugador respondedor", () => {
+  const iniciado = ejecutarAccionCoordinada(base().estado, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  const aceptado = ejecutarAccionCoordinada(iniciado.estado, {
+    tipo: "quiero-envido",
+    jugador: "b",
+  });
+  assert.equal(aceptado.aceptada, true);
+  assert.equal(
+    aceptado.eventos.find((evento) => evento.tipo === "envido-aceptado")?.respondedor,
+    "b",
+  );
+
+  const rechazado = ejecutarAccionCoordinada(iniciado.estado, {
+    tipo: "no-quiero-envido",
+    jugador: "b",
+  });
+  assert.equal(rechazado.aceptada, true);
+  assert.equal(
+    rechazado.eventos.find((evento) => evento.tipo === "envido-rechazado")?.respondedor,
+    "b",
+  );
+  assert.equal(rechazado.estado.envido.resueltos[0].puntos, 1);
+
+  const aumentado = ejecutarAccionCoordinada(iniciado.estado, {
+    tipo: "aumentar-envido",
+    jugador: "b",
+    canto: "real-envido",
+  });
+  const aceptadoPorHumano = ejecutarAccionCoordinada(aumentado.estado, {
+    tipo: "quiero-envido",
+    jugador: "a",
+  });
+  assert.equal(aceptadoPorHumano.aceptada, true);
+  assert.equal(
+    aceptadoPorHumano.eventos.find((evento) => evento.tipo === "envido-aceptado")?.respondedor,
+    "a",
+  );
+  assert.equal(aceptadoPorHumano.estado.envido.resueltos[0].puntos, 5);
+});
+
 test("liquida Envido, Real y Falta por retiro con causa explícita e inmutabilidad", () => {
   for (const canto of ["envido", "real-envido", "falta-envido"]) {
     const iniciado = ejecutarAccionCoordinada(base().estado, {

@@ -4,11 +4,11 @@
 
 Este documento describe la arquitectura técnica real del monorepo al cierre del correctivo 6C.4-R1. Es una referencia para los incrementos posteriores; no sustituye las reglas de juego ni define requisitos de producto.
 
-El [Reglamento v1.9](REGLAMENTO_TRUCO_URUGUAYO_v1.9.md) prevalece para reglas reglamentarias y la [Especificación Funcional v1.4](ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md) para comportamiento de producto y alcance. El [README](../README.md) contiene la instalación y los comandos de uso.
+El [Reglamento v2.0](REGLAMENTO_TRUCO_URUGUAYO_v2.0.md) prevalece para reglas reglamentarias y la [Especificación Funcional v1.4](ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md) para comportamiento de producto y alcance. El [README](../README.md) contiene la instalación y los comandos de uso.
 
 ### Política documental
 
-Las únicas fuentes normativas vigentes son el Reglamento v1.9 y la Especificación Funcional v1.4. Sus versiones históricas se conservan para trazabilidad; los cierres técnicos viven en `docs/cierres/`. Una consolidación editorial no crea reglas ni modifica requisitos aprobados.
+Las únicas fuentes normativas vigentes son el Reglamento v2.0 y la Especificación Funcional v1.4. Sus versiones históricas se conservan para trazabilidad; los cierres técnicos viven en `docs/cierres/`. Una consolidación editorial no crea reglas ni modifica requisitos aprobados.
 
 ## 2. Principios y decisiones arquitectónicas
 

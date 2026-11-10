@@ -139,6 +139,39 @@ test("renuncia al Envido débil y anuncia Flor legal antes que otras apuestas", 
   );
 });
 
+test("la IA anuncia Flor ordinaria ante un Truco pendiente sin responderlo", () => {
+  let estado = partida(
+    "maquina",
+    [c("espada", 4), c("oro", 4), c("copa", 5), c("oro", 5), c("basto", 2), c("oro", 6)],
+    c("basto", 7),
+  );
+  estado = aplicar(estado, { tipo: "proponer-truco", jugador: "humano" });
+  const { observacion, legales } = contexto(estado);
+  assert.equal(
+    legales.some((accion) => accion.tipo === "anunciar-flor"),
+    true,
+  );
+  assert.equal(
+    politicaEstrategicaGlobal.decidir({
+      observacion,
+      accionesLegales: legales,
+      aleatoriedad: { siguiente: () => 0 },
+    })?.tipo,
+    "anunciar-flor",
+  );
+  estado = aplicar(estado, { tipo: "anunciar-flor", jugador: "maquina" });
+  assert.equal(estado.mano.truco.propuestaPendiente?.nivel, "truco");
+  const reanudada = contexto(estado);
+  const respuesta = politicaEstrategicaGlobal.decidir({
+    observacion: reanudada.observacion,
+    accionesLegales: reanudada.legales,
+    aleatoriedad: { siguiente: () => 0 },
+  });
+  assert.ok(respuesta?.tipo === "quiero-truco" || respuesta?.tipo === "no-quiero-truco");
+  estado = aplicar(estado, { ...respuesta, jugador: "maquina" });
+  assert.equal(estado.mano.truco.propuestaPendiente, null);
+});
+
 test("Flor simple se valora como puntos seguros sin comparación rival", () => {
   const estado = partida(
     "humano",

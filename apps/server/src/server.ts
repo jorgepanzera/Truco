@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { readFile, stat } from "node:fs/promises";
+import { dirname, extname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ErrorDeOperacion, RepositorioPartidasEnMemoria, type FuenteAleatoria } from "./matches.js";
 import type { PoliticaEstrategica } from "@truco/game-engine";
 import { instalarWebSocket } from "./websocket.js";
@@ -7,8 +10,26 @@ const LIMITE_CUERPO_BYTES = 16 * 1024;
 type OpcionesServidor = Readonly<{
   aleatoriedad?: FuenteAleatoria;
   politicaAutomatica?: PoliticaEstrategica;
+  /** Directorio de la web compilada; se inyecta en pruebas. */
+  directorioWeb?: string;
 }>;
 type CuerpoJson = Readonly<Record<string, unknown>>;
+const DIRECTORIO_WEB_PREDETERMINADO = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../web/dist",
+);
+const TIPOS_CONTENIDO: Readonly<Record<string, string>> = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ico": "image/x-icon",
+};
 
 class ErrorHttp extends Error {
   constructor(
@@ -82,8 +103,79 @@ function tokenBearer(solicitud: IncomingMessage): string | null {
 }
 
 function idDePartida(ruta: string): string | null {
-  const coincidencia = /^\/api\/matches\/([A-Za-z0-9_-]+)(?:\/(join|start))?$/.exec(ruta);
+  const coincidencia = /^\/api\/matches\/([A-Za-z0-9_-]+)(?:\/(join|start|abandon))?$/.exec(ruta);
   return coincidencia?.[1] ?? null;
+}
+
+function esRutaProtegida(ruta: string): boolean {
+  return ruta === "/api" || ruta.startsWith("/api/") || ruta === "/ws" || ruta.startsWith("/ws/");
+}
+
+function tipoContenido(archivo: string): string {
+  return TIPOS_CONTENIDO[extname(archivo).toLowerCase()] ?? "application/octet-stream";
+}
+
+async function servirWebCompilada(
+  solicitud: IncomingMessage,
+  respuesta: ServerResponse,
+  ruta: string,
+  directorioWeb: string,
+): Promise<boolean> {
+  const metodo = solicitud.method ?? "GET";
+  if (metodo !== "GET" && metodo !== "HEAD") return false;
+  if (esRutaProtegida(ruta)) return false;
+
+  let relativa: string;
+  try {
+    relativa = decodeURIComponent(ruta).replace(/^[/\\]+/, "") || "index.html";
+  } catch {
+    respuesta.writeHead(400);
+    respuesta.end();
+    return true;
+  }
+  const raiz = resolve(directorioWeb);
+  const candidato = resolve(raiz, relativa);
+  const dentroDeRaiz = candidato === raiz || candidato.startsWith(`${raiz}${sep}`);
+  if (!dentroDeRaiz) {
+    respuesta.writeHead(404);
+    respuesta.end();
+    return true;
+  }
+
+  const esRecurso = extname(relativa) !== "";
+  let archivo = candidato;
+  try {
+    if (!(await stat(archivo)).isFile()) throw new Error("No es un archivo.");
+  } catch {
+    if (esRecurso) {
+      respuesta.writeHead(404);
+      respuesta.end();
+      return true;
+    }
+    archivo = resolve(raiz, "index.html");
+    try {
+      if (!(await stat(archivo)).isFile()) throw new Error("No existe el índice.");
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    const contenido = metodo === "HEAD" ? undefined : await readFile(archivo);
+    respuesta.writeHead(200, {
+      "Content-Type": tipoContenido(archivo),
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": archivo.endsWith("index.html")
+        ? "no-cache"
+        : "public, max-age=31536000, immutable",
+    });
+    respuesta.end(contenido);
+    return true;
+  } catch {
+    respuesta.writeHead(404);
+    respuesta.end();
+    return true;
+  }
 }
 
 /** Crea el HTTP de 6A sin abrir un puerto. El estado en memoria vive con este servidor. */
@@ -92,6 +184,7 @@ export function crearServidor(opciones: OpcionesServidor = {}): Server {
     opciones.aleatoriedad,
     opciones.politicaAutomatica,
   );
+  const directorioWeb = opciones.directorioWeb ?? DIRECTORIO_WEB_PREDETERMINADO;
   const servidor = createServer(async (solicitud, respuesta) => {
     const url = new URL(solicitud.url ?? "/", "http://localhost");
     const ruta = url.pathname;
@@ -133,15 +226,25 @@ export function crearServidor(opciones: OpcionesServidor = {}): Server {
       }
       const matchId = idDePartida(ruta);
       if (matchId) {
-        const operacion = ruta.endsWith("/join")
-          ? "join"
-          : ruta.endsWith("/start")
-            ? "start"
-            : "get";
+        const operacion = ruta.endsWith("/abandon")
+          ? "abandon"
+          : ruta.endsWith("/join")
+            ? "join"
+            : ruta.endsWith("/start")
+              ? "start"
+              : "get";
         if (operacion === "get") {
           if (metodo !== "GET") return metodoNoPermitido(respuesta, "GET");
           const sesion = repositorio.autenticar(tokenBearer(solicitud));
           responderJson(respuesta, 200, repositorio.snapshot(matchId, sesion));
+          return;
+        }
+        if (operacion === "abandon") {
+          if (metodo !== "DELETE") return metodoNoPermitido(respuesta, "DELETE");
+          const sesion = repositorio.autenticar(tokenBearer(solicitud));
+          repositorio.abandonar(matchId, sesion);
+          respuesta.writeHead(204);
+          respuesta.end();
           return;
         }
         if (metodo !== "POST") return metodoNoPermitido(respuesta, "POST");
@@ -161,6 +264,7 @@ export function crearServidor(opciones: OpcionesServidor = {}): Server {
         responderJson(respuesta, 200, repositorio.snapshot(matchId, sesion));
         return;
       }
+      if (await servirWebCompilada(solicitud, respuesta, ruta, directorioWeb)) return;
       respuesta.writeHead(404);
       respuesta.end();
     } catch (error) {

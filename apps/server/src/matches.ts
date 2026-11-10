@@ -196,7 +196,12 @@ export type SnapshotIniciado = Readonly<{
   bazaActual: SnapshotBazaPublica;
   turno: number | null;
   desafiosPendientes: Readonly<{
-    envido: Readonly<{ proponente: number; respondedor: number; valor: number }> | null;
+    envido: Readonly<{
+      proponente: number;
+      respondedor: number;
+      valor: number;
+      canto: "envido" | "real-envido" | "falta-envido";
+    }> | null;
     flor: Readonly<{ tipo: string; proponente: number; respondedor: number }> | null;
     truco: Readonly<{ nivel: string; proponente: number }> | null;
     oportunidadFlorPropia: boolean;
@@ -465,7 +470,16 @@ export function proyectarEventoPublico(
   const propuesta = esRegistro(evento.propuesta) ? evento.propuesta : undefined;
   const adjudicacion = esRegistro(evento.adjudicacion) ? evento.adjudicacion : undefined;
   const cadena = esRegistro(evento.cadena) ? evento.cadena : undefined;
-  const ultimoCanto = Array.isArray(cadena?.cantos) ? cadena.cantos.at(-1) : undefined;
+  const cancelacion = esRegistro(evento.cancelacion) ? evento.cancelacion : undefined;
+  const liquidacion = esRegistro(evento.liquidacion) ? evento.liquidacion : undefined;
+  const cantos = Array.isArray(cadena?.cantos)
+    ? cadena.cantos
+    : Array.isArray(adjudicacion?.historial)
+      ? adjudicacion.historial
+      : Array.isArray(liquidacion?.historial)
+        ? liquidacion.historial
+        : [];
+  const ultimoCanto = cantos.at(-1);
   const canto = esRegistro(ultimoCanto) ? texto(ultimoCanto.canto) : undefined;
   const nivelTruco = texto(propuesta?.nivel) ?? texto(adjudicacion?.nivel);
   const jugador =
@@ -474,7 +488,9 @@ export function proyectarEventoPublico(
     texto(evento.jugadorRetirado) ??
     texto(jugada?.jugador) ??
     texto(propuesta?.proponente) ??
-    texto(cadena?.proponente);
+    texto(cadena?.proponente) ??
+    texto(cancelacion?.jugadorFlor) ??
+    texto(liquidacion?.jugadorRetirado);
   const adjudicaciones =
     proyectarAdjudicaciones(evento.adjudicacion) ?? proyectarAdjudicaciones(evento.adjudicaciones);
   // El motor conserva el cierre técnico de la fase aun cuando no hubo ningún
@@ -568,6 +584,14 @@ export class RepositorioPartidasEnMemoria {
     this.#partidas.set(partida.id, partida);
     if (contraMaquina) this.iniciar(partida.id, creador);
     return partida;
+  }
+
+  /** Descarta una partida contra la máquina sin convertirlo en una jugada reglamentaria. */
+  abandonar(partidaId: string, sesion: SesionInvitado): void {
+    const partida = this.#obtenerParaJugador(partidaId, sesion.id);
+    if (!partida.contraMaquina)
+      error("conflicto", "El abandono desde inicio solo está disponible contra la máquina.");
+    this.#partidas.delete(partida.id);
   }
 
   aplicarAccion(
@@ -815,6 +839,7 @@ export class RepositorioPartidasEnMemoria {
               proponente: asientoDe(estado.mano.envido.pendiente.proponente),
               respondedor: asientoDelEquipo(estado.mano.envido.pendiente.equipoRespondedor),
               valor: estado.mano.envido.pendiente.valorAceptado,
+              canto: estado.mano.envido.pendiente.cantos.at(-1)!.canto,
             }
           : null,
         flor: estado.mano.flor.pendiente
@@ -1125,7 +1150,10 @@ export class RepositorioPartidasEnMemoria {
       }
       if (liquidacion?.puntos === "realizada" && estado.mano.ciclo.fase === "liquidacion") {
         const cerrada = ejecutarAccionPartida(estado, { tipo: "cerrar-mano-mazo" });
-        if (!cerrada.aceptada) throw new Error("No se pudo cerrar la mano por mazo.");
+        if (!cerrada.aceptada)
+          throw new Error(
+            `No se pudo cerrar la mano por mazo (${cerrada.rechazo.codigo}): ${cerrada.rechazo.mensaje}`,
+          );
         estado = cerrada.estado;
         if (partida?.contraMaquina) partida.version += 1;
         continue;

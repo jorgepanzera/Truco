@@ -52,7 +52,12 @@ export type EventoPublico = Readonly<{
   marcadorCierre?: readonly Readonly<{ asiento: number; puntos: number }>[];
 }>;
 export type DesafiosPendientes = Readonly<{
-  envido: Readonly<{ proponente: number; respondedor: number; valor: number }> | null;
+  envido: Readonly<{
+    proponente: number;
+    respondedor: number;
+    valor: number;
+    canto: "envido" | "real-envido" | "falta-envido";
+  }> | null;
   flor: Readonly<{ tipo: string; proponente: number; respondedor: number }> | null;
   truco: Readonly<{ nivel: string; proponente: number }> | null;
   oportunidadFlorPropia: boolean;
@@ -136,6 +141,7 @@ const ws = () => {
 
 export async function crearSesionYPartida(
   nickname: string,
+  targetScore: MetaPuntos,
   signal?: AbortSignal,
 ): Promise<{ token: string; snapshot: SnapshotPartida }> {
   const sesion = await fetch(`${http()}/api/guest-sessions`, {
@@ -153,7 +159,7 @@ export async function crearSesionYPartida(
   const partida = await fetch(`${http()}/api/matches`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ mode: "1v1-vs-machine", targetScore: 40 }),
+    body: JSON.stringify({ mode: "1v1-vs-machine", targetScore }),
     signal,
   });
   if (!partida.ok) throw new Error("No se pudo iniciar la partida.");
@@ -161,6 +167,19 @@ export async function crearSesionYPartida(
   const respuesta = (await partida.json()) as { snapshot?: SnapshotPartida };
   if (!respuesta.snapshot) throw new Error("La partida recibida no es válida.");
   return { token, snapshot: respuesta.snapshot };
+}
+
+export async function abandonarPartida(
+  token: string,
+  matchId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const respuesta = await fetch(`${http()}/api/matches/${matchId}/abandon`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  if (!respuesta.ok) throw new Error("No se pudo abandonar la partida.");
 }
 
 export function conectar(

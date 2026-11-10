@@ -54,6 +54,99 @@ button {
   background: #e9cf8c;
   font-weight: 700;
 }
+.inicio {
+  display: grid;
+  width: min(100%, 27rem);
+  margin: 0 auto;
+  gap: 0.8rem;
+  padding: clamp(1rem, 4vw, 2rem);
+  border: 0.18rem solid #9f7137;
+  border-radius: 0.85rem;
+  background: linear-gradient(135deg, rgb(112 71 37 / 0.92), rgb(47 28 15 / 0.96));
+  box-shadow: 0 1rem 2.5rem rgb(0 0 0 / 0.32);
+  text-align: left;
+}
+.inicio__modo,
+.inicio__proximamente {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.4rem;
+  font-weight: 700;
+}
+.inicio__modo {
+  color: #fff0bd;
+  background: rgb(31 20 11 / 0.5);
+}
+.inicio__proximamente {
+  color: #b9a988;
+  background: rgb(31 20 11 / 0.28);
+}
+.inicio__campo,
+.inicio__meta {
+  display: grid;
+  gap: 0.45rem;
+  color: #f4d991;
+  font-weight: 700;
+}
+.inicio__meta {
+  grid-template-columns: repeat(2, 1fr);
+  border: 0;
+  padding: 0;
+}
+.inicio__meta legend {
+  grid-column: 1 / -1;
+  padding: 0;
+}
+.inicio__meta label {
+  color: #fff0bd;
+  font-weight: 400;
+}
+.inicio__meta input {
+  min-height: auto;
+  margin-right: 0.35rem;
+}
+.inicio__campo input {
+  width: 100%;
+}
+.inicio button {
+  margin: 0;
+}
+.inicio__reglamento {
+  color: #f7dc9a;
+  text-align: center;
+}
+.navegacion-inicio {
+  min-height: 2rem;
+  margin: 0 0 0.55rem auto;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+}
+.modal-confirmacion {
+  position: fixed;
+  z-index: 10;
+  inset: 50% auto auto 50%;
+  width: min(calc(100% - 2rem), 28rem);
+  transform: translate(-50%, -50%);
+  border: 0.2rem solid #d8b85e;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  color: #fff4d5;
+  background: #382312;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 0.6);
+}
+.modal-confirmacion h2,
+.modal-confirmacion p {
+  margin: 0.3rem 0;
+}
+.modal-confirmacion div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.modal-confirmacion button {
+  margin: 0;
+}
 
 .mesa-distribucion {
   display: grid;
@@ -99,6 +192,12 @@ button {
     sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.mesa__ver-resultado {
+  min-height: 1.8rem;
+  margin: 0;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
 }
 .tanteador {
   display: grid;
@@ -199,6 +298,17 @@ button {
 .jugador--activo {
   box-shadow: 0 0 0 3px rgb(201 220 106 / 0.6);
 }
+.jugador__canto {
+  border: 1px solid rgb(255 229 162 / 0.7);
+  border-radius: 999px;
+  padding: 0.18rem 0.45rem;
+  color: #382312;
+  background: #ffe5a2;
+  box-shadow: 0 0.2rem 0.5rem rgb(0 0 0 / 0.25);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
 
 .mano-rival,
 .mano-propia {
@@ -296,6 +406,9 @@ button {
   justify-content: center;
   gap: 0.4rem;
   margin: 0.3rem auto;
+}
+.acciones-con-aviso {
+  position: relative;
 }
 .acciones button {
   min-height: 2rem;
@@ -402,16 +515,25 @@ button {
   margin-top: 0.75rem;
 }
 .mesa__desafio {
+  position: absolute;
+  z-index: 1;
+  bottom: calc(100% + 0.45rem);
+  left: 50%;
+  width: min(100%, 26rem);
+  transform: translateX(-50%);
+  pointer-events: none;
   justify-self: center;
   color: #ffe5a2;
+  text-align: center;
 }
 .anuncio-evento {
   position: absolute;
   z-index: 1;
-  top: 43%;
+  top: 44%;
   left: 50%;
   width: min(88%, 28rem);
   margin: 0;
+  overflow: hidden;
   transform: translate(-50%, -50%);
   border: 2px solid #d8b85e;
   border-radius: 0.55rem;
@@ -423,6 +545,10 @@ button {
     700 0.9rem/1.35 system-ui,
     sans-serif;
   text-align: center;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  pointer-events: none;
 }
 .historial-toggle {
   display: none;
@@ -543,6 +669,25 @@ button {
 .mesa__meta {
   margin: 0;
   font-family: system-ui, sans-serif;
+}
+.mesa__espera-confirmacion {
+  position: absolute;
+  z-index: 2;
+  top: 0.8rem;
+  right: 0.8rem;
+  max-width: min(52%, 20rem);
+  margin: 0;
+  border: 1px solid rgb(216 184 94 / 0.75);
+  border-radius: 999px;
+  padding: 0.3rem 0.55rem;
+  color: #fff4d5;
+  background: rgb(56 35 18 / 0.92);
+  box-shadow: 0 0.25rem 0.6rem rgb(0 0 0 / 0.3);
+  font:
+    700 0.72rem/1.25 system-ui,
+    sans-serif;
+  text-align: center;
+  pointer-events: none;
 }
 .mesa__sin-cartas {
   color: #f1dca5;

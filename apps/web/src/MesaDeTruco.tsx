@@ -119,12 +119,20 @@ function Jugador({
   puntos,
   activo,
   clase,
-}: Readonly<{ nombre: string; puntos: number; activo: boolean; clase: string }>) {
+  canto,
+}: Readonly<{
+  nombre: string;
+  puntos: number;
+  activo: boolean;
+  clase: string;
+  canto?: string | null;
+}>) {
   return (
     <section className={`jugador ${clase}${activo ? " jugador--activo" : ""}`}>
       <span className="jugador__nombre">{nombre}</span>
       <span className="jugador__puntos">{puntos} pts</span>
       {activo ? <span className="jugador__turno">Su turno</span> : null}
+      {canto ? <span className="jugador__canto">{canto}</span> : null}
     </section>
   );
 }
@@ -289,11 +297,15 @@ function PanelPartidaFinalizada({
   resultado,
   snapshot,
   onJugarOtra,
+  onRevisarPartida,
+  onVolverInicio,
   reiniciando,
 }: Readonly<{
   resultado: NonNullable<SnapshotIniciado["resultadoPartida"]>;
   snapshot: SnapshotIniciado;
   onJugarOtra: () => void;
+  onRevisarPartida: () => void;
+  onVolverInicio: () => void;
   reiniciando: boolean;
 }>) {
   const ganador = nombreDe(snapshot, resultado.asientoGanador);
@@ -317,6 +329,12 @@ function PanelPartidaFinalizada({
             snapshot={snapshot}
           />
         ) : null}
+        <button disabled={reiniciando} type="button" onClick={onRevisarPartida}>
+          Revisar partida
+        </button>
+        <button disabled={reiniciando} type="button" onClick={onVolverInicio}>
+          Volver al inicio
+        </button>
         <button disabled={reiniciando} type="button" onClick={onJugarOtra}>
           {reiniciando ? "Creando partida…" : "Jugar otra partida"}
         </button>
@@ -325,16 +343,44 @@ function PanelPartidaFinalizada({
   );
 }
 
-function textoDesafioPendiente(snapshot: SnapshotIniciado): string | null {
+function nombreCantoEnvido(canto: "envido" | "real-envido" | "falta-envido"): string {
+  return canto === "real-envido"
+    ? "Real Envido"
+    : canto === "falta-envido"
+      ? "Falta Envido"
+      : "Envido";
+}
+
+function preguntaRespuesta(requiereAceptacion: boolean): string {
+  return requiereAceptacion ? "¿Querés aceptar?" : "¿Qué respondés?";
+}
+
+export function textoDesafioPendiente(snapshot: SnapshotIniciado): string | null {
   const { envido, flor, truco, oportunidadFlorPropia } = snapshot.desafiosPendientes;
-  if (envido)
+  if (envido) {
+    const canto = nombreCantoEnvido(envido.canto);
     return envido.respondedor === snapshot.asientoPropio
-      ? "La máquina espera tu respuesta al envido."
-      : "Esperando respuesta al envido.";
-  if (flor)
+      ? `${nombreDe(snapshot, envido.proponente)} cantó ${canto}. ${preguntaRespuesta(envido.canto === "falta-envido")}`
+      : `${nombreDe(snapshot, envido.respondedor)} debe responder el ${canto}.`;
+  }
+  if (flor) {
+    const desafio =
+      flor.tipo === "contra-flor-al-resto"
+        ? "Contra Flor al Resto"
+        : flor.tipo === "contra-flor"
+          ? "Contra Flor"
+          : "Flor";
+    const trucoSuspendido = truco
+      ? truco.nivel === "retruco"
+        ? " El Retruco queda suspendido."
+        : truco.nivel === "vale-cuatro"
+          ? " El Vale Cuatro queda suspendido."
+          : " El Truco queda suspendido."
+      : "";
     return flor.respondedor === snapshot.asientoPropio
-      ? "La máquina espera tu respuesta a la flor."
-      : "Esperando respuesta a la flor.";
+      ? `${nombreDe(snapshot, flor.proponente)} cantó ${desafio}. ${preguntaRespuesta(flor.tipo === "contra-flor-al-resto")}${trucoSuspendido}`
+      : `${nombreDe(snapshot, flor.respondedor)} debe responder la ${desafio}.${trucoSuspendido}`;
+  }
   if (truco) {
     const canto =
       truco.nivel === "retruco"
@@ -344,11 +390,39 @@ function textoDesafioPendiente(snapshot: SnapshotIniciado): string | null {
           : "Truco";
     return truco.proponente === snapshot.asientoPropio
       ? `La máquina está decidiendo ${canto}.`
-      : `La máquina espera tu respuesta al ${canto}.`;
+      : `${nombreDe(snapshot, truco.proponente)} cantó ${canto}. ${preguntaRespuesta(truco.nivel === "vale-cuatro")}`;
   }
   if (oportunidadFlorPropia)
     return "La partida espera que anuncies Flor; este control aún no está disponible.";
   return null;
+}
+
+function textoBurbujaCanto(evento: EventoPublico): string | null {
+  const envido =
+    evento.canto === "real-envido"
+      ? "Real Envido"
+      : evento.canto === "falta-envido"
+        ? "Falta Envido"
+        : "Envido";
+  switch (evento.tipo) {
+    case "envido-iniciado":
+    case "envido-aumentado":
+      return envido;
+    case "flor-anunciada":
+      return "Flor";
+    case "contra-flor-propuesta":
+      return "Contra Flor";
+    case "contra-flor-al-resto-propuesta":
+      return "Contra Flor al Resto";
+    case "truco-propuesto":
+      return "Truco";
+    case "retruco-propuesto":
+      return "Retruco";
+    case "vale-cuatro-propuesto":
+      return "Vale Cuatro";
+    default:
+      return null;
+  }
 }
 
 function etiquetaAccion(accion: AccionWeb): string {
@@ -397,7 +471,7 @@ function textoEvento(
   baza?: SnapshotIniciado["bazasCompletadas"][number],
 ): string {
   const actor = evento.asiento === undefined ? null : nombreDe(snapshot, evento.asiento);
-  const sujeto = actor ?? "La partida";
+  const sujeto = actor ?? "Un jugador";
   if (evento.tipo === "baza-resuelta") {
     if (!baza) return "Se resolvió una baza.";
     const numero = ordinalBaza(snapshot.bazasCompletadas.indexOf(baza));
@@ -437,23 +511,39 @@ function textoEvento(
       .join(" – ");
     return `Tanteador al cierre: ${tanteador ?? "sin datos"}.`;
   }
+  const cantoEnvido =
+    evento.canto === "real-envido"
+      ? "Real Envido"
+      : evento.canto === "falta-envido"
+        ? "Falta Envido"
+        : "Envido";
   const nombres: Record<string, string> = {
     "carta-jugada": `${sujeto} jugó una carta`,
     "jugador-retirado": `${sujeto} se fue al mazo`,
     "mazo-adjudicado": "Se adjudicó el mazo",
     "envido-iniciado": `${sujeto} cantó`,
     "envido-aumentado": `${sujeto} aumentó a`,
-    "envido-aceptado": `${sujeto} aceptó el Envido`,
-    "envido-rechazado": `${sujeto} rechazó el Envido`,
-    "envido-rechazo-implicito-por-retiro": "El Envido fue rechazado por retiro",
-    "envido-cancelado-por-retiro": "El Envido se canceló por retiro",
-    "envido-cancelado-por-flor": "El Envido se canceló por Flor",
-    "truco-cancelado-por-retiro": "El Truco se canceló por retiro",
-    "truco-rechazo-implicito-por-retiro": "El Truco fue rechazado por retiro",
+    "envido-aceptado": `${sujeto} aceptó el ${cantoEnvido}`,
+    "envido-rechazado": `${sujeto} rechazó el ${cantoEnvido}`,
+    "envido-rechazo-implicito-por-retiro": `El ${cantoEnvido} quedó rechazado por retiro`,
+    "envido-cancelado-por-retiro": `${sujeto} se fue al mazo y el ${cantoEnvido} quedó sin efecto`,
+    "envido-cancelado-por-flor": `${sujeto} cantó Flor y el ${cantoEnvido} quedó sin efecto`,
+    "truco-cancelado-por-retiro": "El Truco quedó sin efecto por retiro",
+    "truco-rechazo-implicito-por-retiro": "El Truco quedó rechazado por retiro",
     "flor-anunciada": `${sujeto} cantó Flor`,
-    "flor-adjudicada": "Se adjudicó la Flor",
+    "flor-adjudicada": "Se resolvió la Flor",
     "contra-flor-propuesta": `${sujeto} cantó Contra Flor`,
     "contra-flor-al-resto-propuesta": `${sujeto} cantó Contra Flor al Resto`,
+    "contra-flor-aceptada": `${sujeto} aceptó la Contra Flor`,
+    "contra-flor-rechazada": `${sujeto} rechazó la Contra Flor`,
+    "contra-flor-al-resto-aceptada": `${sujeto} aceptó la Contra Flor al Resto`,
+    "contra-flor-al-resto-rechazada": `${sujeto} rechazó la Contra Flor al Resto`,
+    "contra-flor-al-resto-victoria": `${
+      evento.asientoGanador === undefined
+        ? "El equipo ganador"
+        : nombreDe(snapshot, evento.asientoGanador)
+    } ganó la partida con Contra Flor al Resto`,
+    "partida-terminada-contra-flor-al-resto": "La partida finalizó con Contra Flor al Resto",
     "truco-propuesto": `${sujeto} cantó Truco`,
     "retruco-propuesto": `${sujeto} cantó Retruco`,
     "vale-cuatro-propuesto": `${sujeto} cantó Vale Cuatro`,
@@ -467,12 +557,6 @@ function textoEvento(
     "mano-decidida-por-rechazo-truco": "La mano quedó definida por rechazo del Truco",
     "mano-decidida-por-mazo": "La mano quedó definida por retiro al mazo",
   };
-  const cantoEnvido =
-    evento.canto === "real-envido"
-      ? "Real Envido"
-      : evento.canto === "falta-envido"
-        ? "Falta Envido"
-        : "Envido";
   const texto =
     evento.tipo === "envido-iniciado"
       ? `${nombres[evento.tipo]} ${cantoEnvido}`
@@ -576,16 +660,28 @@ function Historial({
         {manos.length ? (
           manos.map((mano) => {
             const tieneCierre = mano.eventos.some((evento) => evento.tipo === "mano-cerrada");
+            const adjudicacionYaInformada = mano.eventos.some(
+              (evento) =>
+                [
+                  "truco-rechazado",
+                  "retruco-rechazado",
+                  "vale-cuatro-rechazado",
+                  "mazo-adjudicado",
+                ].includes(evento.tipo) &&
+                !!evento.adjudicaciones?.some((adjudicacion) => adjudicacion.puntos > 0),
+            );
             let indiceBaza = 0;
             const eventosVisibles = mano.eventos.filter(
               (evento) =>
                 !(
-                  tieneCierre &&
-                  [
-                    "mano-decidida-por-bazas",
-                    "mano-decidida-por-rechazo-truco",
-                    "mano-decidida-por-mazo",
-                  ].includes(evento.tipo)
+                  (tieneCierre &&
+                    [
+                      "mano-decidida-por-bazas",
+                      "mano-decidida-por-rechazo-truco",
+                      "mano-decidida-por-mazo",
+                    ].includes(evento.tipo)) ||
+                  (adjudicacionYaInformada && evento.tipo === "mano-cerrada") ||
+                  evento.tipo === "partida-terminada-contra-flor-al-resto"
                 ),
             );
             return (
@@ -663,6 +759,10 @@ export function MesaDeTruco({
   anuncioActual = null,
   historial = [],
   onJugarOtra,
+  onRevisarPartida,
+  onVerResultado,
+  onVolverInicio,
+  revisandoResultado = false,
   creando = false,
 }: Readonly<{
   snapshot: SnapshotPartida;
@@ -674,17 +774,29 @@ export function MesaDeTruco({
   anuncioActual?: EventoPublico | null;
   historial?: readonly EventoPublico[];
   onJugarOtra?: () => void;
+  onRevisarPartida?: () => void;
+  onVerResultado?: () => void;
+  onVolverInicio?: () => void;
+  revisandoResultado?: boolean;
   creando?: boolean;
 }>) {
   const [historialAbierto, setHistorialAbierto] = useState(false);
   if (snapshot.estado !== "iniciada") return <EstadoEspera snapshot={snapshot} />;
-  if (snapshot.resultadoPartida && onJugarOtra)
+  if (
+    snapshot.resultadoPartida &&
+    onJugarOtra &&
+    onRevisarPartida &&
+    onVolverInicio &&
+    !revisandoResultado
+  )
     return (
       <div className="mesa-distribucion">
         <PanelPartidaFinalizada
           resultado={snapshot.resultadoPartida}
           snapshot={snapshot}
           onJugarOtra={onJugarOtra}
+          onRevisarPartida={onRevisarPartida}
+          onVolverInicio={onVolverInicio}
           reiniciando={creando}
         />
         <PanelLateral
@@ -701,6 +813,9 @@ export function MesaDeTruco({
   )?.asiento;
   const turnoPropio = snapshot.turno === snapshot.asientoPropio;
   const turnoRival = asientoRival !== undefined && snapshot.turno === asientoRival;
+  const partidaFinalizada = Boolean(snapshot.resultadoPartida);
+  const cantoActual = anuncioActual ? textoBurbujaCanto(anuncioActual) : null;
+  const asientoCanto = cantoActual ? anuncioActual?.asiento : undefined;
   const nombreRival = asientoRival === undefined ? "Máquina" : nombreDe(snapshot, asientoRival);
   const puntosRival = asientoRival === undefined ? 0 : marcadorDe(snapshot, asientoRival);
   const cartasMostradas = snapshot.bazasCompletadas.reduce(
@@ -717,6 +832,7 @@ export function MesaDeTruco({
     );
   const puedeJugar =
     turnoPropio &&
+    !partidaFinalizada &&
     snapshot.cartasPropias.some(cartaEsLegal) &&
     !accionPendiente &&
     !cierreMostrado &&
@@ -727,6 +843,11 @@ export function MesaDeTruco({
       <section className="mesa" aria-label="Mesa de Truco">
         <header className="mesa__cabecera">
           <span>Mano en curso</span>
+          {partidaFinalizada && revisandoResultado && onVerResultado ? (
+            <button className="mesa__ver-resultado" onClick={onVerResultado} type="button">
+              Ver resultado
+            </button>
+          ) : null}
           <span>
             {cartasMostradas} carta{cartasMostradas === 1 ? "" : "s"} pública
             {cartasMostradas === 1 ? "" : "s"} en mesa
@@ -734,6 +855,7 @@ export function MesaDeTruco({
         </header>
         <Jugador
           clase="jugador--rival"
+          canto={asientoCanto === asientoRival ? cantoActual : null}
           nombre={nombreRival}
           puntos={puntosRival}
           activo={turnoRival}
@@ -772,36 +894,41 @@ export function MesaDeTruco({
             ) : null}
           </div>
         </section>
-        {avisoPendiente ? <p className="mesa__desafio">{avisoPendiente}</p> : null}
         {anuncioActual ? (
           <p aria-live="assertive" className="anuncio-evento">
             {textoEvento(snapshot, anuncioActual)}
           </p>
         ) : null}
-        {onAccion ? (
-          <div className="acciones" aria-label="Acciones disponibles">
-            {snapshot.accionesDisponibles
-              .filter((accion) => accion.type !== "play-card")
-              .map((accion, indice) => (
-                <button
-                  disabled={accionPendiente || Boolean(cierreMostrado)}
-                  key={`${accion.type}-${indice}`}
-                  onClick={() => onAccion(accion)}
-                  type="button"
-                >
-                  {etiquetaAccion(accion)}
-                </button>
-              ))}
+        {onAccion && !partidaFinalizada ? (
+          <div className="acciones-con-aviso">
+            {avisoPendiente ? <p className="mesa__desafio">{avisoPendiente}</p> : null}
+            <div className="acciones" aria-label="Acciones disponibles">
+              {snapshot.accionesDisponibles
+                .filter((accion) => accion.type !== "play-card")
+                .map((accion, indice) => (
+                  <button
+                    disabled={accionPendiente || Boolean(cierreMostrado)}
+                    key={`${accion.type}-${indice}`}
+                    onClick={() => onAccion(accion)}
+                    type="button"
+                  >
+                    {etiquetaAccion(accion)}
+                  </button>
+                ))}
+            </div>
           </div>
         ) : null}
         {accionPendiente ? (
-          <p className="mesa__aviso">Esperando confirmación de la jugada.</p>
+          <p aria-live="polite" className="mesa__espera-confirmacion" role="status">
+            Esperando confirmación de la jugada.
+          </p>
         ) : null}
-        {cierreMostrado && onContinuar ? (
+        {cierreMostrado && onContinuar && !partidaFinalizada ? (
           <PanelCierre cierre={cierreMostrado} snapshot={snapshot} onContinuar={onContinuar} />
         ) : null}
         <Jugador
           clase="jugador--propio"
+          canto={asientoCanto === snapshot.asientoPropio ? cantoActual : null}
           nombre={nombreDe(snapshot, snapshot.asientoPropio)}
           puntos={marcadorDe(snapshot, snapshot.asientoPropio)}
           activo={turnoPropio}

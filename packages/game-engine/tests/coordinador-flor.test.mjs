@@ -221,7 +221,10 @@ test("Flor unilateral adjudicada bloquea toda cadena posterior de Envido", () =>
     { equipo: "B", puntos: 0, motivo: "sin-desafio" },
   ]);
   const legales = obtenerAccionesLegalesJugador(flor.estado, "a");
-  assert.equal(legales.some((accion) => accion.tipo === "iniciar-envido"), false);
+  assert.equal(
+    legales.some((accion) => accion.tipo === "iniciar-envido"),
+    false,
+  );
   const antesDeIntentos = JSON.stringify(flor.estado);
   for (const canto of ["envido", "real-envido", "falta-envido"]) {
     const intento = ejecutarAccionPartida(flor.estado, {
@@ -248,7 +251,10 @@ test("Flor rival adjudicada bloquea Envido aun al responder Truco pendiente", ()
   const trucoAntes = partida.mano.truco;
   const turnoAntes = partida.mano.juego.jugadorTurno;
   const legales = obtenerAccionesLegalesJugador(partida, "a");
-  assert.equal(legales.some((accion) => accion.tipo === "iniciar-envido"), false);
+  assert.equal(
+    legales.some((accion) => accion.tipo === "iniciar-envido"),
+    false,
+  );
   assert.ok(legales.some((accion) => accion.tipo === "quiero-truco"));
   assert.ok(legales.some((accion) => accion.tipo === "no-quiero-truco"));
   assert.ok(legales.some((accion) => accion.tipo === "proponer-retruco"));
@@ -304,8 +310,14 @@ test("Flor responde Envido, Real Envido y Falta Envido sin cambiar el turno", ()
       { equipo: "A", puntos: 0, motivo: "sin-desafio" },
       { equipo: "B", puntos: 3, motivo: "sin-desafio" },
     ]);
-    assert.ok(flor.eventos.some((evento) => evento.tipo === "flor-anunciada"), canto);
-    assert.ok(flor.eventos.some((evento) => evento.tipo === "envido-cancelado-por-flor"), canto);
+    assert.ok(
+      flor.eventos.some((evento) => evento.tipo === "flor-anunciada"),
+      canto,
+    );
+    assert.ok(
+      flor.eventos.some((evento) => evento.tipo === "envido-cancelado-por-flor"),
+      canto,
+    );
     partida = flor.estado;
   }
 });

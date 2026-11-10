@@ -7,24 +7,36 @@ function iniciar(): void {
   const { host, puerto } = leerConfiguracion(process.env);
   const servidor = crearServidor();
   let cerrando = false;
+  const detener = () => {
+    if (cerrando) return;
+    cerrando = true;
+    servidor.close((error) => {
+      if (error) {
+        console.error(`No se pudo cerrar el servidor: ${error.message}`);
+        process.exitCode = 1;
+      } else {
+        console.log("Servidor detenido.");
+      }
+    });
+  };
 
   servidor.on("error", (error) => {
     console.error(`Error del servidor: ${error.message}`);
     process.exitCode = 1;
   });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, () => {
-      if (cerrando) return;
-      cerrando = true;
-      servidor.close((error) => {
-        if (error) {
-          console.error(`No se pudo cerrar el servidor: ${error.message}`);
-          process.exitCode = 1;
-        } else {
-          console.log("Servidor detenido.");
-        }
-      });
-    });
+    process.on(signal, detener);
+  }
+  const pidLanzador = Number.parseInt(process.env.TRUCO_LAUNCHER_PID ?? "", 10);
+  if (Number.isSafeInteger(pidLanzador) && pidLanzador > 0) {
+    const vigilarLanzador = setInterval(() => {
+      try {
+        process.kill(pidLanzador, 0);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ESRCH") detener();
+      }
+    }, 1000);
+    vigilarLanzador.unref();
   }
   servidor.listen(puerto, host, () => {
     const direccion = servidor.address();

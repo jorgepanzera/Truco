@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { Carta } from "@truco/shared";
+import type { Carta, MetaPuntos } from "@truco/shared";
 import { MesaDeTruco } from "./MesaDeTruco.js";
 import {
   conectar,
+  abandonarPartida,
   crearSesionYPartida,
   enviarAccion,
   suscribir,
@@ -22,12 +23,17 @@ const esAnuncioCentral = (evento: EventoPublico) =>
   evento.tipo === "flor-anunciada" ||
   evento.tipo.startsWith("contra-flor-");
 
+const esCierrePublico = (evento: EventoPublico) =>
+  evento.tipo === "mano-cerrada" || evento.tipo === "partida-terminada-contra-flor-al-resto";
+
 export function App() {
   const [apodo, setApodo] = useState("");
+  const [metaPuntos, setMetaPuntos] = useState<MetaPuntos>(40);
   const [estado, setEstado] = useState<string>(textos.estado);
   const [partida, setPartida] = useState<SnapshotPartida | null>(null);
   const [creando, setCreando] = useState(false);
   const socket = useRef<WebSocket | null>(null);
+  const tokenActual = useRef<string | null>(null);
   const solicitud = useRef<AbortController | null>(null);
   const montada = useRef(false);
   const solicitudEnCurso = useRef(false);
@@ -44,6 +50,9 @@ export function App() {
   const secuenciasVistas = useRef(new Set<number>());
   const partidoEventos = useRef<string | null>(null);
   const [cierrePendiente, setCierrePendiente] = useState<CierreMostrado | null>(null);
+  const [confirmarAbandono, setConfirmarAbandono] = useState(false);
+  const [abandonando, setAbandonando] = useState(false);
+  const [revisandoResultado, setRevisandoResultado] = useState(false);
 
   useEffect(() => {
     montada.current = true;
@@ -54,6 +63,7 @@ export function App() {
       solicitud.current = null;
       socket.current?.close();
       socket.current = null;
+      tokenActual.current = null;
       accionEnCurso.current = null;
     };
   }, []);
@@ -88,7 +98,7 @@ export function App() {
         partidoEventos.current = snapshot.matchId;
         secuenciasVistas.current = new Set(eventos.map((evento) => evento.secuencia));
         setHistorial(eventos);
-        setColaAnuncios(eventos.filter(esAnuncioCentral));
+        setColaAnuncios(eventos.some(esCierrePublico) ? [] : eventos.filter(esAnuncioCentral));
         setAnuncioActual(null);
       } else {
         const nuevos = eventos.filter((evento) => !secuenciasVistas.current.has(evento.secuencia));
@@ -97,7 +107,10 @@ export function App() {
           setHistorial((anterior) =>
             [...anterior, ...nuevos].sort((a, b) => a.secuencia - b.secuencia),
           );
-          setColaAnuncios((cola) => [...cola, ...nuevos.filter(esAnuncioCentral)]);
+          if (nuevos.some(esCierrePublico)) {
+            setColaAnuncios([]);
+            setAnuncioActual(null);
+          } else setColaAnuncios((cola) => [...cola, ...nuevos.filter(esAnuncioCentral)]);
         }
       }
     }
@@ -186,6 +199,24 @@ export function App() {
     setEstado("Confirmando continuación…");
   };
 
+  const limpiarPartidaLocal = () => {
+    ultimoSnapshot.current = null;
+    tokenActual.current = null;
+    accionEnCurso.current = null;
+    setAccionPendiente(false);
+    setPartida(null);
+    setCierreMostrado(null);
+    setCierrePendiente(null);
+    setHistorial([]);
+    setColaAnuncios([]);
+    setAnuncioActual(null);
+    cierresMostrados.current.clear();
+    secuenciasVistas.current.clear();
+    partidoEventos.current = null;
+    setRevisandoResultado(false);
+    setConfirmarAbandono(false);
+  };
+
   const iniciarPartida = async () => {
     if (solicitudEnCurso.current) return;
 
@@ -197,7 +228,7 @@ export function App() {
     solicitud.current = controlador;
 
     try {
-      const resultado = await crearSesionYPartida(apodo, controlador.signal);
+      const resultado = await crearSesionYPartida(apodo, metaPuntos, controlador.signal);
       if (!montada.current || intento.current !== intentoActual) return;
 
       cierresMostrados.current.clear();
@@ -209,6 +240,7 @@ export function App() {
       setColaAnuncios([]);
       setAnuncioActual(null);
       actualizarSnapshot(resultado.snapshot);
+      tokenActual.current = resultado.token;
       accionEnCurso.current = null;
       setAccionPendiente(false);
       const socketAnterior = socket.current;
@@ -273,6 +305,37 @@ export function App() {
     }
   };
 
+  const abandonar = async () => {
+    const snapshot = ultimoSnapshot.current;
+    const token = tokenActual.current;
+    if (!snapshot || !token || abandonando) return false;
+    setAbandonando(true);
+    setEstado("Abandonando partida…");
+    const intentoActual = ++intento.current;
+    try {
+      await abandonarPartida(token, snapshot.matchId);
+      if (!montada.current || intento.current !== intentoActual) return false;
+      const conexion = socket.current;
+      socket.current = null;
+      conexion?.close();
+      limpiarPartidaLocal();
+      setEstado("Listo para una nueva partida.");
+      return true;
+    } catch (causa) {
+      if (montada.current && intento.current === intentoActual) {
+        setEstado(causa instanceof Error ? causa.message : "No se pudo abandonar la partida.");
+        setConfirmarAbandono(false);
+      }
+      return false;
+    } finally {
+      if (montada.current && intento.current === intentoActual) setAbandonando(false);
+    }
+  };
+
+  const jugarOtra = async () => {
+    if (await abandonar()) void iniciarPartida();
+  };
+
   const iniciar = (evento: React.FormEvent) => {
     evento.preventDefault();
     void iniciarPartida();
@@ -284,30 +347,93 @@ export function App() {
         <p className="estado">{estado}</p>
         <h1 id="titulo">{textos.titulo}</h1>
         {!partida ? (
-          <form onSubmit={iniciar}>
-            <input
-              aria-label="Apodo"
-              value={apodo}
-              onChange={(evento) => setApodo(evento.target.value)}
-              required
-              minLength={3}
-            />
-            <button disabled={creando}>{creando ? "Creando…" : "Jugar contra máquina"}</button>
+          <form className="inicio" onSubmit={iniciar}>
+            <p className="inicio__modo">Contra la máquina</p>
+            <p aria-disabled="true" className="inicio__proximamente">
+              Jugar con amigos — Próximamente
+            </p>
+            <label className="inicio__campo">
+              Tu nombre
+              <input
+                aria-label="Apodo"
+                value={apodo}
+                onChange={(evento) => setApodo(evento.target.value)}
+                required
+                minLength={3}
+              />
+            </label>
+            <fieldset className="inicio__meta">
+              <legend>Objetivo</legend>
+              {[30, 40].map((meta) => (
+                <label key={meta}>
+                  <input
+                    checked={metaPuntos === meta}
+                    name="meta-puntos"
+                    onChange={() => setMetaPuntos(meta as MetaPuntos)}
+                    type="radio"
+                    value={meta}
+                  />
+                  {meta} puntos
+                </label>
+              ))}
+            </fieldset>
+            <button disabled={creando}>{creando ? "Creando…" : "Comenzar partida"}</button>
+            <a
+              className="inicio__reglamento"
+              href="https://github.com/jorgepanzera/Truco/blob/main/docs/REGLAMENTO_TRUCO_URUGUAYO_v2.0.md"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Reglamento del Truco Uruguayo
+            </a>
           </form>
         ) : (
-          <MesaDeTruco
-            accionPendiente={accionPendiente}
-            anuncioActual={anuncioActual}
-            cierreMostrado={cierreMostrado}
-            creando={creando}
-            historial={historial}
-            onAccion={enviarAccionDisponible}
-            onJugarCarta={jugarCarta}
-            onJugarOtra={() => void iniciarPartida()}
-            onContinuar={continuar}
-            snapshot={partida}
-          />
+          <>
+            {partida.estado === "iniciada" && !partida.resultadoPartida ? (
+              <button
+                className="navegacion-inicio"
+                onClick={() => setConfirmarAbandono(true)}
+                type="button"
+              >
+                Inicio
+              </button>
+            ) : null}
+            <MesaDeTruco
+              accionPendiente={accionPendiente}
+              anuncioActual={anuncioActual}
+              cierreMostrado={cierreMostrado}
+              creando={creando || abandonando}
+              historial={historial}
+              onAccion={enviarAccionDisponible}
+              onJugarCarta={jugarCarta}
+              onJugarOtra={() => void jugarOtra()}
+              onContinuar={continuar}
+              onRevisarPartida={() => setRevisandoResultado(true)}
+              onVerResultado={() => setRevisandoResultado(false)}
+              onVolverInicio={() => void abandonar()}
+              revisandoResultado={revisandoResultado}
+              snapshot={partida}
+            />
+          </>
         )}
+        {confirmarAbandono ? (
+          <section aria-label="Confirmar abandono" className="modal-confirmacion" role="dialog">
+            <h2>¿Querés abandonar la partida?</h2>
+            <p>Perderás el progreso actual.</p>
+            <div>
+              <button
+                disabled={abandonando}
+                onClick={() => setConfirmarAbandono(false)}
+                type="button"
+              >
+                Seguir jugando
+              </button>
+              <button disabled={abandonando} onClick={() => void abandonar()} type="button">
+                {abandonando ? "Abandonando…" : "Abandonar y volver al inicio"}
+              </button>
+            </div>
+          </section>
+        ) : null}
       </section>
     </main>
   );

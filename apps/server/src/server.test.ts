@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer as createTcpServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -39,6 +42,38 @@ test("la proyección pública conserva el canto exacto de Real Envido", () => {
       canto: "real-envido",
     },
   );
+});
+
+test("la proyección pública identifica al respondedor de Envido sin exponer datos privados", () => {
+  const evento = proyectarEventoPublico({
+    tipo: "envido-aceptado",
+    respondedor: "maquina",
+    adjudicacion: {
+      equipo: "B",
+      puntos: 2,
+      motivo: "aceptacion",
+      historial: [
+        { jugador: "jorge", equipo: "A", canto: "envido" },
+        { jugador: "maquina", equipo: "B", canto: "real-envido" },
+      ],
+    },
+    tantos: [
+      { jugador: "jorge", equipo: "A", tanto: 29 },
+      { jugador: "maquina", equipo: "B", tanto: 30 },
+    ],
+  });
+  assert.deepEqual(evento, {
+    tipo: "envido-aceptado",
+    jugador: "maquina",
+    canto: "real-envido",
+    equipoGanador: "B",
+    adjudicaciones: [{ equipo: "B", puntos: 2, causa: "aceptacion" }],
+    tantos: [
+      { jugador: "jorge", tanto: 29 },
+      { jugador: "maquina", tanto: 30 },
+    ],
+  });
+  assert.equal(JSON.stringify(evento).includes("cartas"), false);
 });
 
 test("la proyección pública conserva la escalera completa de Truco", () => {
@@ -137,6 +172,15 @@ test("la proyección distingue un retiro individual del cierre definitivo por ma
   });
 });
 
+test("abandonar una partida contra la máquina la invalida sin adjudicar puntos", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(fuenteSemilla(9));
+  const creada = repositorio.crearSesion("Jorge");
+  const jugador = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(jugador, 40, true);
+  repositorio.abandonar(partida.id, jugador);
+  assert.throws(() => repositorio.snapshot(partida.id, jugador));
+});
+
 test("el cierre de mano conserva el tanteador autoritativo sin duplicarlo", () => {
   const repositorio = new RepositorioPartidasEnMemoria(fuenteSemilla(4), { decidir: () => null });
   const creada = repositorio.crearSesion("Jorge");
@@ -157,9 +201,16 @@ test("el cierre de mano conserva el tanteador autoritativo sin duplicarlo", () =
   );
   assert.equal(tanteadores.length, 1);
   assert.deepEqual(tanteadores[0]?.marcadorCierre, posterior.marcador);
+  const accionRepetida = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "cerrar-por-mazo-repetido",
+    expectedVersion: posterior.version,
+    action: { type: "go-to-mazo" },
+  });
+  assert.equal(accionRepetida.aceptada, false);
   const repetido = repositorio.snapshot(partida.id, humano);
   if (repetido.estado !== "iniciada") throw new Error("La partida debía conservar el cierre.");
   assert.deepEqual(repetido.eventosPublicos, posterior.eventosPublicos);
+  assert.deepEqual(repetido.marcador, posterior.marcador);
 });
 
 test("la proyección pública no presenta el cierre técnico de Flor como una adjudicación", () => {
@@ -384,6 +435,7 @@ test("Flor como respuesta a Envido se publica fuera de turno y cancela sin punto
   if (pendiente.estado !== "iniciada") throw new Error("La mano debía iniciar.");
   assert.equal(pendiente.turno, 1);
   assert.equal(pendiente.desafiosPendientes.envido?.respondedor, 0);
+  assert.equal(pendiente.desafiosPendientes.envido?.canto, "envido");
   assert.ok(pendiente.accionesDisponibles.some((accion) => accion.type === "announce-flor"));
   const turnoAntes = pendiente.turno;
   const respuesta = repositorio.aplicarAccion(partida.id, humano, {
@@ -410,6 +462,54 @@ test("Flor como respuesta a Envido se publica fuera de turno y cancela sin punto
     false,
   );
   assert.equal(posterior.turno, turnoAntes);
+});
+
+test("Flor ordinaria responde Truco pendiente sin aceptarlo y el servidor lo reanuda", () => {
+  const repositorio = new RepositorioPartidasEnMemoria(fuenteSemilla(15), {
+    decidir: ({ accionesLegales }) =>
+      accionesLegales.find((accion) => accion.tipo === "proponer-truco") ?? null,
+  });
+  const creada = repositorio.crearSesion("Jorge");
+  const humano = repositorio.autenticar(creada.token);
+  const partida = repositorio.crearPartida(humano, 40, true);
+  const pendiente = repositorio.snapshot(partida.id, humano);
+  if (pendiente.estado !== "iniciada") throw new Error("La mano debía iniciar.");
+  assert.deepEqual(pendiente.desafiosPendientes.truco, { nivel: "truco", proponente: 1 });
+  assert.ok(pendiente.accionesDisponibles.some((accion) => accion.type === "announce-flor"));
+  assert.ok(pendiente.accionesDisponibles.some((accion) => accion.type === "con-flor-quiero"));
+  const turnoAntes = pendiente.turno;
+  const anuncio = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "flor-suspende-truco",
+    expectedVersion: pendiente.version,
+    action: { type: "announce-flor" },
+  });
+  assert.equal(anuncio.aceptada, true, anuncio.codigo);
+  const reanudada = repositorio.snapshot(partida.id, humano);
+  if (reanudada.estado !== "iniciada") throw new Error("La mano debía continuar activa.");
+  assert.deepEqual(reanudada.desafiosPendientes.truco, pendiente.desafiosPendientes.truco);
+  assert.equal(reanudada.turno, turnoAntes);
+  assert.ok(reanudada.accionesDisponibles.some((accion) => accion.type === "accept-truco"));
+  assert.ok(reanudada.accionesDisponibles.some((accion) => accion.type === "reject-truco"));
+  assert.equal(
+    reanudada.accionesDisponibles.some((accion) => accion.type === "con-flor-quiero"),
+    false,
+  );
+  const rechazo = repositorio.aplicarAccion(partida.id, humano, {
+    actionId: "rechazar-truco-reanudado",
+    expectedVersion: reanudada.version,
+    action: { type: "reject-truco" },
+  });
+  assert.equal(rechazo.aceptada, true, rechazo.codigo);
+  const final = repositorio.snapshot(partida.id, humano);
+  if (final.estado !== "iniciada") throw new Error("La mano debía conservar su cierre.");
+  assert.equal(
+    final.eventosPublicos.filter((evento) => evento.tipo === "flor-adjudicada").length,
+    1,
+  );
+  assert.equal(
+    final.eventosPublicos.filter((evento) => evento.tipo === "truco-rechazado").length,
+    1,
+  );
 });
 
 test("WebSocket rechaza Envido posterior a Flor sin devolver error genérico", async () => {
@@ -770,7 +870,8 @@ test("6C.6: retiro conserva oportunidad de Flor y no bloquea el avance", () => {
   });
   assert.equal(continuar.aceptada, true, continuar.codigo);
   const siguiente = repositorio.snapshot(partida.id, humano);
-  if (siguiente.estado !== "iniciada") throw new Error("La partida debía iniciar la mano siguiente.");
+  if (siguiente.estado !== "iniciada")
+    throw new Error("La partida debía iniciar la mano siguiente.");
   assert.equal(siguiente.idMano, "mano-2");
   assert.equal(siguiente.continuacion, null);
 });
@@ -882,7 +983,7 @@ test("servidor HTTP: salud, errores y cierre liberan el puerto", async () => {
     assert.equal(salud.headers.get("content-type"), "application/json");
     assert.deepEqual(await salud.json(), { status: "ok", service: "truco-server" });
 
-    const inexistente = await fetch(`${url}/inexistente`);
+    const inexistente = await fetch(`${url}/assets/inexistente.js`);
     assert.equal(inexistente.status, 404);
     await inexistente.arrayBuffer();
 
@@ -904,6 +1005,46 @@ test("servidor HTTP: salud, errores y cierre liberan el puerto", async () => {
   await new Promise<void>((resolve, reject) =>
     pruebaPuerto.close((error) => (error ? reject(error) : resolve())),
   );
+});
+
+test("servidor HTTP: sirve la web compilada, fallback SPA y conserva las rutas API", async () => {
+  const directorioWeb = await mkdtemp(join(tmpdir(), "truco-web-estatica-"));
+  await mkdir(join(directorioWeb, "assets"));
+  await writeFile(join(directorioWeb, "index.html"), "<main>Truco local</main>");
+  await writeFile(join(directorioWeb, "assets", "app.js"), "console.log('Truco');");
+  const servidor = crearServidor({ directorioWeb });
+  servidor.listen(0, "127.0.0.1");
+  await once(servidor, "listening");
+  const direccion = servidor.address();
+  assert.ok(direccion && typeof direccion !== "string");
+  const url = `http://127.0.0.1:${direccion.port}`;
+  try {
+    const inicio = await fetch(`${url}/`);
+    assert.equal(inicio.status, 200);
+    assert.equal(inicio.headers.get("content-type"), "text/html; charset=utf-8");
+    assert.equal(await inicio.text(), "<main>Truco local</main>");
+
+    const rutaAplicacion = await fetch(`${url}/partida/local`);
+    assert.equal(rutaAplicacion.status, 200);
+    assert.equal(await rutaAplicacion.text(), "<main>Truco local</main>");
+
+    const recurso = await fetch(`${url}/assets/app.js`);
+    assert.equal(recurso.status, 200);
+    assert.equal(recurso.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.equal(await recurso.text(), "console.log('Truco');");
+
+    const recursoAusente = await fetch(`${url}/assets/ausente.js`);
+    assert.equal(recursoAusente.status, 404);
+
+    const apiAusente = await fetch(`${url}/api/inexistente`);
+    assert.equal(apiAusente.status, 404);
+    assert.notEqual(await apiAusente.text(), "<main>Truco local</main>");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      servidor.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(directorioWeb, { recursive: true, force: true });
+  }
 });
 
 test("API 6A: sesiones, asientos, inicio canónico y snapshots privados", async () => {

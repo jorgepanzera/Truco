@@ -1,6 +1,6 @@
 # Truco Uruguayo
 
-Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos vigentes son el [Reglamento v1.9](docs/REGLAMENTO_TRUCO_URUGUAYO_v1.9.md) y la [Especificación Funcional v1.4](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md). El Reglamento prevalece para las reglas de juego; las versiones anteriores se conservan como antecedentes históricos.
+Base del monorepositorio para la aplicación web de Truco Uruguayo. Los documentos normativos vigentes son el [Reglamento v2.0](docs/REGLAMENTO_TRUCO_URUGUAYO_v2.0.md) y la [Especificación Funcional v1.4](docs/ESPECIFICACION_FUNCIONAL_TRUCO_v1.4.md). El Reglamento prevalece para las reglas de juego; las versiones anteriores se conservan como antecedentes históricos.
 
 La [arquitectura de la aplicación](docs/ARQUITECTURA.md) describe los módulos, sus dependencias y el estado de implementación.
 
@@ -75,6 +75,18 @@ El workflow de GitHub Actions ejecuta `npm ci` y `npm run check` en pushes y pul
 Después de un push autorizado que incluya el workflow, abrir la pestaña **Actions** del repositorio, seleccionar la ejecución «Verificaciones» y revisar el resultado de los pasos `npm ci` y `npm run check`. Un resultado local correcto no confirma por sí solo la ejecución remota.
 
 ## Aplicación web
+
+### Distribución local para Windows
+
+La distribución para usuarios finales se genera con Node 24 y no incluye dependencias ni datos locales:
+
+```powershell
+npm.cmd run package:windows
+```
+
+El comando crea `entregables/Truco-1.0.0/`. Esa carpeta contiene `INSTALAR_TRUCO.bat`, `JUGAR_TRUCO.bat`, las fuentes mínimas para compilar y las [instrucciones para Windows](INSTRUCCIONES_WINDOWS.md). Quien recibe la carpeta instala Node.js 24, ejecuta el instalador una vez con Internet y luego abre el juego con el lanzador; la ejecución normal usa sólo el servidor local en `127.0.0.1:3000` y la web compilada, sin Vite.
+
+El servidor sirve `apps/web/dist/` y aplica fallback SPA únicamente a rutas web. `/api` y `/ws` siguen reservados al transporte del juego y nunca responden el `index.html` de la aplicación.
 
 En una terminal PowerShell de VS Code, activar Node 24 como se indica arriba, ejecutar `npm.cmd ci` y, desde la raíz:
 

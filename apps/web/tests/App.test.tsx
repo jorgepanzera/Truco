@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App.js";
 import { Carta } from "../src/Carta.js";
-import { TanteadorPalitos, textoMotivoCierre } from "../src/MesaDeTruco.js";
+import { TanteadorPalitos, textoDesafioPendiente, textoMotivoCierre } from "../src/MesaDeTruco.js";
 
 class SocketDePrueba {
   static instancias: SocketDePrueba[] = [];
@@ -243,6 +243,91 @@ describe("pantalla de partida", () => {
     expect(textoMotivoCierre("causa-desconocida")).toBe("cierre de mano");
   });
 
+  it("nombra el desafío pendiente exacto según el estado autoritativo", () => {
+    const casos = [
+      [
+        {
+          envido: { proponente: 1, respondedor: 0, valor: 2, canto: "envido" },
+          flor: null,
+          truco: null,
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Envido. ¿Qué respondés?",
+      ],
+      [
+        {
+          envido: { proponente: 1, respondedor: 0, valor: 3, canto: "real-envido" },
+          flor: null,
+          truco: null,
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Real Envido. ¿Qué respondés?",
+      ],
+      [
+        {
+          envido: { proponente: 1, respondedor: 0, valor: 0, canto: "falta-envido" },
+          flor: null,
+          truco: null,
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Falta Envido. ¿Querés aceptar?",
+      ],
+      [
+        {
+          envido: null,
+          flor: null,
+          truco: { nivel: "truco", proponente: 1 },
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Truco. ¿Qué respondés?",
+      ],
+      [
+        {
+          envido: null,
+          flor: null,
+          truco: { nivel: "retruco", proponente: 1 },
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Retruco. ¿Qué respondés?",
+      ],
+      [
+        {
+          envido: null,
+          flor: null,
+          truco: { nivel: "vale-cuatro", proponente: 1 },
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Vale Cuatro. ¿Querés aceptar?",
+      ],
+      [
+        {
+          envido: null,
+          flor: { tipo: "contra-flor", proponente: 1, respondedor: 0 },
+          truco: null,
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Contra Flor. ¿Qué respondés?",
+      ],
+      [
+        {
+          envido: null,
+          flor: { tipo: "contra-flor-al-resto", proponente: 1, respondedor: 0 },
+          truco: null,
+          oportunidadFlorPropia: false,
+        },
+        "Máquina cantó Contra Flor al Resto. ¿Querés aceptar?",
+      ],
+    ] as const;
+
+    for (const [desafiosPendientes, esperado] of casos)
+      expect(
+        textoDesafioPendiente({
+          ...snapshotIniciado(1),
+          desafiosPendientes,
+        } as Parameters<typeof textoDesafioPendiente>[0]),
+      ).toBe(esperado);
+  });
+
   it("usa los 40 SVG de la baraja española, incluidas sota, caballo y rey", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -255,7 +340,7 @@ describe("pantalla de partida", () => {
       await act(async () =>
         root.render(
           <>
-            {Object.entries(palos).flatMap(([palo, archivo]) =>
+            {Object.entries(palos).flatMap(([palo]) =>
               valores.map((valor) => (
                 <Carta
                   carta={{ palo: palo as keyof typeof palos, valor }}
@@ -347,6 +432,7 @@ describe("pantalla de partida", () => {
         'button[aria-label="Jugar 1 de espada"]',
       );
       expect(carta).not.toBeNull();
+      const cartasAntesDeEsperar = [...container.querySelectorAll(".mano-propia .carta")];
       await act(async () => carta?.click());
       await act(async () => carta?.click());
       expect(socket.send).toHaveBeenCalledTimes(3);
@@ -357,6 +443,10 @@ describe("pantalla de partida", () => {
         action: { type: "play-card", card: { valor: 1, palo: "espada" } },
       });
       expect(container.textContent).toContain("Esperando confirmación de la jugada.");
+      expect(container.querySelector('[role="status"]')?.className).toBe(
+        "mesa__espera-confirmacion",
+      );
+      expect([...container.querySelectorAll(".mano-propia .carta")]).toEqual(cartasAntesDeEsperar);
       await act(async () =>
         socket.recibir({
           type: "game.rejected",
@@ -515,7 +605,10 @@ describe("pantalla de partida", () => {
           },
         }),
       );
-      expect(container.textContent).toContain("La máquina espera tu respuesta al Truco.");
+      expect(container.textContent).toContain("Máquina cantó Truco. ¿Qué respondés?");
+      const avisoTruco = container.querySelector(".mesa__desafio");
+      expect(avisoTruco?.parentElement?.classList.contains("acciones-con-aviso")).toBe(true);
+      expect(avisoTruco?.parentElement?.querySelector(".acciones")).not.toBeNull();
       await act(async () =>
         socket.recibir({
           type: "game.snapshot",
@@ -531,7 +624,7 @@ describe("pantalla de partida", () => {
           },
         }),
       );
-      expect(container.textContent).toContain("La máquina espera tu respuesta al Retruco.");
+      expect(container.textContent).toContain("Máquina cantó Retruco. ¿Qué respondés?");
       await act(async () =>
         socket.recibir({
           type: "game.snapshot",
@@ -628,7 +721,7 @@ describe("pantalla de partida", () => {
         { type: "reject-envido" as const },
       ],
       desafiosPendientes: {
-        envido: { proponente: 1, respondedor: 0, valor: 2 },
+        envido: { proponente: 1, respondedor: 0, valor: 2, canto: "envido" },
         flor: null,
         truco: null,
         oportunidadFlorPropia: false,
@@ -661,6 +754,45 @@ describe("pantalla de partida", () => {
       expect(etiquetas).toContain("Quiero");
       expect(etiquetas).toContain("No quiero");
       expect(etiquetas).not.toContain("Con Flor Quiero");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("muestra Flor y Con Flor Quiero al responder Truco pendiente", async () => {
+    const respuestaTrucoConFlor = {
+      ...snapshotIniciado(14),
+      turno: 1,
+      accionesDisponibles: [
+        { type: "announce-flor" as const },
+        { type: "con-flor-quiero" as const },
+        { type: "accept-truco" as const },
+        { type: "reject-truco" as const },
+        { type: "go-to-mazo" as const },
+      ],
+      desafiosPendientes: {
+        envido: null,
+        flor: null,
+        truco: { nivel: "truco" as const, proponente: 1 },
+        oportunidadFlorPropia: false,
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: respuestaTrucoConFlor })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      const etiquetas = [...container.querySelectorAll<HTMLButtonElement>(".acciones button")].map(
+        (boton) => boton.textContent,
+      );
+      expect(etiquetas).toEqual(["Flor", "Con Flor Quiero", "Quiero", "No quiero", "Irse al mazo"]);
+      expect(container.textContent).toContain("Máquina cantó Truco. ¿Qué respondés?");
     } finally {
       await act(async () => root.unmount());
     }
@@ -721,6 +853,7 @@ describe("pantalla de partida", () => {
         .fn()
         .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
         .mockResolvedValueOnce(respuesta({ snapshot: snapshotEspera }))
+        .mockResolvedValueOnce(respuesta({}))
         .mockResolvedValueOnce(respuesta({ token: "token-nuevo" }))
         .mockResolvedValueOnce(respuesta({ snapshot: nueva })),
     );
@@ -794,7 +927,11 @@ describe("pantalla de partida", () => {
       const jugarOtra = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
         (boton) => boton.textContent === "Jugar otra partida",
       );
-      await act(async () => jugarOtra?.click());
+      await act(async () => {
+        jugarOtra?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
       expect(SocketDePrueba.instancias).toHaveLength(2);
       expect(container.textContent).toContain("0 pts");
       expect(container.querySelector('[aria-label="Partido finalizado"]')).toBeNull();
@@ -869,7 +1006,7 @@ describe("pantalla de partida", () => {
             ...snapshotIniciado(2),
             eventosPublicos: eventos,
             desafiosPendientes: {
-              envido: { proponente: 1, respondedor: 0, valor: 3 },
+              envido: { proponente: 1, respondedor: 0, valor: 3, canto: "real-envido" },
               flor: null,
               truco: null,
               oportunidadFlorPropia: false,
@@ -878,9 +1015,13 @@ describe("pantalla de partida", () => {
         }),
       );
       expect(container.textContent).toContain("Máquina cantó Real Envido.");
-      expect(container.textContent).toContain("La máquina espera tu respuesta al envido.");
+      expect(container.textContent).toContain("Máquina cantó Real Envido. ¿Qué respondés?");
+      expect(container.querySelector(".jugador--rival .jugador__canto")?.textContent).toBe(
+        "Real Envido",
+      );
       await act(async () => vi.advanceTimersByTimeAsync(3000));
       expect(container.querySelector(".anuncio-evento")).toBeNull();
+      expect(container.querySelector(".jugador__canto")).toBeNull();
       await act(async () =>
         socket.recibir({
           type: "game.snapshot",
@@ -891,6 +1032,55 @@ describe("pantalla de partida", () => {
     } finally {
       await act(async () => root.unmount());
       vi.useRealTimers();
+    }
+  });
+
+  it("orienta Falta Envido de la máquina y conserva sólo sus respuestas reglamentarias", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: snapshotEspera })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      const socket = SocketDePrueba.instancias[0]!;
+      await act(async () => socket.abrir());
+      await act(async () => socket.recibir({ type: "auth.ok" }));
+      await act(async () =>
+        socket.recibir({
+          type: "game.snapshot",
+          snapshot: {
+            ...snapshotIniciado(2),
+            accionesDisponibles: [
+              { type: "accept-envido" as const },
+              { type: "reject-envido" as const },
+              { type: "go-to-mazo" as const },
+            ],
+            desafiosPendientes: {
+              envido: { proponente: 1, respondedor: 0, valor: 0, canto: "falta-envido" },
+              flor: null,
+              truco: null,
+              oportunidadFlorPropia: false,
+            },
+          },
+        }),
+      );
+      expect(container.querySelector(".mesa__desafio")?.textContent).toBe(
+        "Máquina cantó Falta Envido. ¿Querés aceptar?",
+      );
+      expect(
+        [...container.querySelectorAll(".acciones button")].map((boton) => boton.textContent),
+      ).toEqual(["Quiero", "No quiero", "Irse al mazo"]);
+      expect(container.querySelector(".mesa__desafio")?.parentElement?.classList).toContain(
+        "acciones-con-aviso",
+      );
+      expect(container.querySelectorAll(".mano-propia .carta")).toHaveLength(3);
+    } finally {
+      await act(async () => root.unmount());
     }
   });
 
@@ -1008,6 +1198,110 @@ describe("pantalla de partida", () => {
     }
   });
 
+  it("mantiene las cartas jugables mientras un anuncio largo aparece y desaparece", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: snapshotEspera })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      const socket = SocketDePrueba.instancias[0]!;
+      await act(async () => socket.abrir());
+      await act(async () => socket.recibir({ type: "auth.ok" }));
+      await act(async () =>
+        socket.recibir({
+          type: "game.snapshot",
+          snapshot: {
+            ...snapshotIniciado(2),
+            eventosPublicos: [
+              {
+                secuencia: 1,
+                idMano: "mano-2",
+                tipo: "envido-aceptado",
+                asiento: 1,
+                canto: "falta-envido",
+                tantos: [
+                  { asiento: 0, tanto: 29 },
+                  { asiento: 1, tanto: 30 },
+                ],
+                adjudicaciones: [{ asientoGanador: 1, puntos: 11 }],
+              },
+            ],
+          },
+        }),
+      );
+      const cartasAntes = [...container.querySelectorAll<HTMLButtonElement>(".mano-propia .carta")];
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain("Falta Envido");
+      expect(cartasAntes).toHaveLength(3);
+      expect(cartasAntes.every((carta) => !carta.disabled)).toBe(true);
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.querySelector(".anuncio-evento")).toBeNull();
+      expect([...container.querySelectorAll(".mano-propia .carta")]).toEqual(cartasAntes);
+      expect(cartasAntes.every((carta) => !carta.disabled)).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it("descarta anuncios pendientes al recibir el cierre público de la mano", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: snapshotEspera })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      const socket = SocketDePrueba.instancias[0]!;
+      await act(async () => socket.abrir());
+      await act(async () => socket.recibir({ type: "auth.ok" }));
+      const canto = { secuencia: 1, idMano: "mano-2", tipo: "truco-propuesto", asiento: 1 };
+      await act(async () =>
+        socket.recibir({
+          type: "game.snapshot",
+          snapshot: { ...snapshotIniciado(2), eventosPublicos: [canto] },
+        }),
+      );
+      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
+        "Máquina cantó Truco.",
+      );
+      await act(async () =>
+        socket.recibir({
+          type: "game.snapshot",
+          snapshot: {
+            ...snapshotIniciado(3),
+            eventosPublicos: [
+              canto,
+              {
+                secuencia: 2,
+                idMano: "mano-2",
+                tipo: "mano-cerrada",
+                asientoGanador: 1,
+                adjudicaciones: [{ asientoGanador: 1, puntos: 1, causa: "bazas" }],
+              },
+            ],
+          },
+        }),
+      );
+      expect(container.querySelector(".anuncio-evento")).toBeNull();
+      expect(container.querySelectorAll(".historial-publico li")).toHaveLength(2);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
   it("agrupa el historial lateral, conserva la lectura y permite abrirlo desde su control", async () => {
     const eventos = [
       { secuencia: 1, idMano: "mano-2", tipo: "truco-propuesto", asiento: 1 },
@@ -1086,6 +1380,118 @@ describe("pantalla de partida", () => {
         }),
       );
       expect(desplazable.scrollTop).toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("redacta actores, niveles y adjudicaciones sin duplicar el cierre de Truco", async () => {
+    const eventos = [
+      {
+        secuencia: 1,
+        idMano: "mano-9",
+        tipo: "envido-aceptado",
+        asiento: 1,
+        canto: "envido",
+        tantos: [
+          { asiento: 0, tanto: 29 },
+          { asiento: 1, tanto: 30 },
+        ],
+        adjudicaciones: [{ asientoGanador: 1, puntos: 2 }],
+      },
+      {
+        secuencia: 2,
+        idMano: "mano-10",
+        tipo: "envido-rechazado",
+        asiento: 1,
+        canto: "envido",
+        adjudicaciones: [{ asientoGanador: 0, puntos: 1 }],
+      },
+      {
+        secuencia: 3,
+        idMano: "mano-10",
+        tipo: "envido-aceptado",
+        asiento: 0,
+        canto: "real-envido",
+        adjudicaciones: [{ asientoGanador: 0, puntos: 3 }],
+      },
+      {
+        secuencia: 4,
+        idMano: "mano-10",
+        tipo: "envido-rechazado",
+        asiento: 0,
+        canto: "falta-envido",
+        adjudicaciones: [{ asientoGanador: 1, puntos: 1 }],
+      },
+      { secuencia: 5, idMano: "mano-10", tipo: "contra-flor-propuesta", asiento: 1 },
+      { secuencia: 6, idMano: "mano-10", tipo: "contra-flor-aceptada", asiento: 0 },
+      {
+        secuencia: 7,
+        idMano: "mano-10",
+        tipo: "contra-flor-al-resto-propuesta",
+        asiento: 0,
+      },
+      {
+        secuencia: 8,
+        idMano: "mano-10",
+        tipo: "contra-flor-al-resto-rechazada",
+        asiento: 1,
+      },
+      {
+        secuencia: 9,
+        idMano: "mano-10",
+        tipo: "truco-rechazado",
+        asiento: 0,
+        adjudicaciones: [{ asientoGanador: 1, puntos: 1 }],
+      },
+      {
+        secuencia: 10,
+        idMano: "mano-10",
+        tipo: "mano-cerrada",
+        asientoGanador: 1,
+        adjudicaciones: [{ asientoGanador: 1, puntos: 1, causa: "rechazo-truco" }],
+      },
+      { secuencia: 11, idMano: "mano-11", tipo: "truco-propuesto", asiento: 0 },
+      { secuencia: 12, idMano: "mano-11", tipo: "retruco-propuesto", asiento: 1 },
+      { secuencia: 13, idMano: "mano-11", tipo: "vale-cuatro-propuesto", asiento: 0 },
+      {
+        secuencia: 14,
+        idMano: "mano-11",
+        tipo: "contra-flor-al-resto-victoria",
+        asientoGanador: 1,
+      },
+      { secuencia: 15, idMano: "mano-11", tipo: "partida-terminada-contra-flor-al-resto" },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(
+          respuesta({ snapshot: { ...snapshotIniciado(1), eventosPublicos: eventos } }),
+        ),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      const texto = container.textContent ?? "";
+      expect(texto).toContain(
+        "Máquina aceptó el Envido. Ana: 29 tantos — Máquina: 30 tantos. Máquina ganó 2 puntos.",
+      );
+      expect(texto).toContain("Máquina rechazó el Envido. Ana ganó 1 punto.");
+      expect(texto).toContain("Ana aceptó el Real Envido.");
+      expect(texto).toContain("Ana rechazó el Falta Envido.");
+      expect(texto).toContain("Máquina cantó Contra Flor.");
+      expect(texto).toContain("Ana aceptó la Contra Flor.");
+      expect(texto).toContain("Máquina rechazó la Contra Flor al Resto.");
+      expect(texto).toContain("Ana cantó Truco.");
+      expect(texto).toContain("Máquina cantó Retruco.");
+      expect(texto).toContain("Ana cantó Vale Cuatro.");
+      expect(texto).toContain("Máquina ganó la partida con Contra Flor al Resto.");
+      expect(texto).not.toContain("La partida aceptó");
+      expect(texto).not.toContain("partida terminada contra flor al resto");
+      expect(texto).not.toContain("Máquina ganó la mano por rechazo del Truco (+1 punto).");
     } finally {
       await act(async () => root.unmount());
     }
@@ -1179,7 +1585,7 @@ describe("pantalla de partida", () => {
   it("conserva la cancelación de Envido por Flor en historial, no en el aviso central", async () => {
     vi.useFakeTimers();
     const eventos = [
-      { secuencia: 1, idMano: "mano-2", tipo: "envido-cancelado-por-flor" },
+      { secuencia: 1, idMano: "mano-2", tipo: "envido-cancelado-por-flor", asiento: 1 },
       { secuencia: 2, idMano: "mano-2", tipo: "truco-propuesto", asiento: 1 },
     ];
     vi.stubGlobal(
@@ -1195,7 +1601,7 @@ describe("pantalla de partida", () => {
     const { container, root } = await montar();
     try {
       await iniciar(container);
-      expect(container.textContent).toContain("El Envido se canceló por Flor.");
+      expect(container.textContent).toContain("Máquina cantó Flor y el Envido quedó sin efecto.");
       expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
         "Máquina cantó Truco.",
       );
@@ -1207,7 +1613,7 @@ describe("pantalla de partida", () => {
     }
   });
 
-  it("encola Retruco y Vale Cuatro sin perder respuestas automáticas y separa el cierre", async () => {
+  it("prioriza el cierre sobre anuncios históricos ya resueltos", async () => {
     vi.useFakeTimers();
     const eventos = [
       { secuencia: 1, idMano: "mano-2", tipo: "flor-adjudicada", asientoGanador: 1 },
@@ -1261,22 +1667,11 @@ describe("pantalla de partida", () => {
     const { container, root } = await montar();
     try {
       await iniciar(container);
-      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
-        "Ana cantó Retruco.",
-      );
-      await act(async () => vi.advanceTimersByTimeAsync(3000));
-      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
-        "Máquina aceptó el Retruco.",
-      );
-      await act(async () => vi.advanceTimersByTimeAsync(3000));
-      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
-        "Máquina cantó Vale Cuatro.",
-      );
-      await act(async () => vi.advanceTimersByTimeAsync(3000));
-      expect(container.querySelector(".anuncio-evento")?.textContent).toContain(
-        "Ana aceptó el Vale Cuatro.",
-      );
-      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(container.querySelector(".anuncio-evento")).toBeNull();
+      expect(container.textContent).toContain("Ana cantó Retruco.");
+      expect(container.textContent).toContain("Máquina aceptó el Retruco.");
+      expect(container.textContent).toContain("Máquina cantó Vale Cuatro.");
+      expect(container.textContent).toContain("Ana aceptó el Vale Cuatro.");
       expect(container.textContent).toContain(
         "Máquina ganó la mano por bazas con Retruco (+3 puntos).",
       );
@@ -1388,5 +1783,138 @@ describe("pantalla de partida", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(SocketDePrueba.instancias).toHaveLength(0);
+  });
+
+  it("muestra inicio, conserva el objetivo elegido y crea una partida nueva", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respuesta({ token: "token-uno" }))
+      .mockResolvedValueOnce(respuesta({ snapshot: { ...snapshotIniciado(1), metaPuntos: 30 } }));
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      expect(container.textContent).toContain("Contra la máquina");
+      expect(container.textContent).toContain("Jugar con amigos — Próximamente");
+      expect(container.querySelector('[href*="REGLAMENTO_TRUCO_URUGUAYO_v2.0"]')).not.toBeNull();
+      const objetivo30 = container.querySelector<HTMLInputElement>('input[value="30"]')!;
+      await act(async () => objetivo30.click());
+      await iniciar(container);
+      expect(JSON.parse(fetch.mock.calls[1]?.[1]?.body as string)).toMatchObject({
+        mode: "1v1-vs-machine",
+        targetScore: 30,
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("cancela o confirma el abandono sin reutilizar la partida", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+      .mockResolvedValueOnce(respuesta({ snapshot: snapshotIniciado(1) }))
+      .mockResolvedValueOnce(respuesta({}));
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      await act(async () =>
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((boton) => boton.textContent === "Inicio")
+          ?.click(),
+      );
+      expect(container.querySelector('[aria-label="Confirmar abandono"]')).not.toBeNull();
+      await act(async () =>
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((boton) => boton.textContent === "Seguir jugando")
+          ?.click(),
+      );
+      expect(container.querySelector('[aria-label="Mesa de Truco"]')).not.toBeNull();
+      await act(async () =>
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((boton) => boton.textContent === "Inicio")
+          ?.click(),
+      );
+      await act(async () => {
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((boton) => boton.textContent === "Abandonar y volver al inicio")
+          ?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(fetch.mock.calls[2]?.[0]).toContain("/api/matches/m_prueba/abandon");
+      expect(fetch.mock.calls[2]?.[1]).toMatchObject({ method: "DELETE" });
+      expect(container.querySelector('[aria-label="Mesa de Truco"]')).toBeNull();
+      expect(container.querySelector<HTMLInputElement>('input[aria-label="Apodo"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("permite revisar y reabrir el resultado final sin habilitar acciones", async () => {
+    const final = {
+      ...snapshotIniciado(1),
+      resultadoPartida: { asientoGanador: 0 },
+      ultimoCierre: {
+        idMano: "mano-2",
+        version: 1,
+        asientoGanador: 0,
+        equipo: "equipo-0",
+        puntos: 2,
+        causa: "bazas",
+        bazas: [],
+        comprobacion: {
+          envido: {
+            participantes: [
+              {
+                asiento: 0,
+                equipo: "equipo-0",
+                cartas: [
+                  { valor: 7 as const, palo: "oro" as const },
+                  { valor: 6 as const, palo: "oro" as const },
+                ],
+                tanto: 33,
+              },
+            ],
+            asientoGanador: 0,
+            asientoDeterminante: 0,
+          },
+        },
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respuesta({ token: "token-privado" }))
+        .mockResolvedValueOnce(respuesta({ snapshot: final })),
+    );
+    vi.stubGlobal("WebSocket", SocketDePrueba);
+    const { container, root } = await montar();
+    try {
+      await iniciar(container);
+      expect(container.textContent).toContain("Partido finalizado");
+      expect(container.textContent).toContain("Comprobación de Flor y Envido");
+      await act(async () =>
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((boton) => boton.textContent === "Revisar partida")
+          ?.click(),
+      );
+      expect(container.querySelector('[aria-label="Mesa de Truco"]')).not.toBeNull();
+      expect(container.textContent).toContain("Ver resultado");
+      expect(container.querySelector('[aria-label="Acciones disponibles"]')).toBeNull();
+      await act(async () =>
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((boton) => boton.textContent === "Ver resultado")
+          ?.click(),
+      );
+      expect(container.textContent).toContain("Partido finalizado");
+      expect(container.textContent).toContain("Envido: 33");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });

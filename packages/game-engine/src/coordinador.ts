@@ -382,7 +382,8 @@ export function esCicloCoherenteConEstado(
           esOportunidadFlorConsumidaCoherente(juego, flor, liquidacionMazo.oportunidadFlor)) &&
         flor.pendiente === null &&
         (flor.anuncios.length === 0
-          ? flor.adjudicaciones.length === 0
+          ? flor.adjudicaciones.length === 0 ||
+            (flor.cerrado && flor.adjudicaciones.every((adjudicacion) => adjudicacion.puntos === 0))
           : flor.cerrado && flor.adjudicaciones.length > 0) &&
         envido.pendiente === null &&
         // Las adjudicaciones de Envido son hechos canónicos previos al mazo:
@@ -701,6 +702,33 @@ function anunciarFlorComoRespuestaEnvido(
       : contextoFlor;
   return anunciarFlor(estado.flor, contextoDeAnuncio, jugador);
 }
+/** §7.3 v2.0: Flor suspende la propuesta de Truco sin responderla ni alterar el turno. */
+function anunciarFlorComoRespuestaTruco(
+  estado: EstadoManoCoordinada,
+  contextoFlor: ContextoFlor,
+  jugador: string,
+) {
+  const propuesta = estado.truco.propuestaPendiente;
+  const participante = contextoFlor.jugadores.find((item) => item.id === jugador);
+  const proponente = propuesta
+    ? contextoFlor.jugadores.find((item) => item.id === propuesta.proponente)
+    : undefined;
+  if (
+    !propuesta ||
+    !participante ||
+    !proponente ||
+    !(participante.activa ?? true) ||
+    !estaActivo(estado.juego, jugador) ||
+    participante.equipo === proponente.equipo
+  )
+    return null;
+  const contextoDeAnuncio =
+    estado.flor.anuncios.length === 0 && contextoFlor.jugadorTurno !== jugador
+      ? { ...contextoFlor, jugadorTurno: jugador }
+      : contextoFlor;
+  return anunciarFlor(estado.flor, contextoDeAnuncio, jugador);
+}
+
 function integrarResultadoFlor(estado: EstadoManoCoordinada, flor: EstadoFlorDominio) {
   const resultadoPartida = flor.resultadoTerminal
     ? {
@@ -1518,12 +1546,17 @@ export function ejecutarAccionCoordinada(estado: EstadoManoCoordinada, accion: A
     const respuestaEnvido = estado.envido.pendiente
       ? anunciarFlorComoRespuestaEnvido(estado, contextoFlor, accion.jugador)
       : null;
+    const respuestaTruco =
+      !respuestaEnvido && estado.truco.propuestaPendiente
+        ? anunciarFlorComoRespuestaTruco(estado, contextoFlor, accion.jugador)
+        : null;
     if (estado.envido.pendiente && respuestaEnvido === null)
       return rechazo(
         "flor-envido-respondedor-invalido",
         "Sólo el equipo respondedor puede anunciar Flor ante Envido pendiente.",
       );
-    const resultado = respuestaEnvido ?? anunciarFlor(estado.flor, contextoFlor, accion.jugador);
+    const resultado =
+      respuestaEnvido ?? respuestaTruco ?? anunciarFlor(estado.flor, contextoFlor, accion.jugador);
     if (!resultado.aceptada) return rechazo(resultado.codigo, "AcciÃ³n de Flor rechazada.");
     const contextoCierre = obtenerContextoFlor(
       estado.juego,

@@ -5,6 +5,7 @@ dist-types/
 apps/server/src/generated/
 build/
 coverage/
+entregables/
 *.tsbuildinfo
 
 .env

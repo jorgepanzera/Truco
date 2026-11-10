@@ -968,7 +968,8 @@ test("§6.1 v1.7: el respondedor puede abrir Envido fuera de turno y conserva Tr
       "cadena-duplicada",
     );
     assert.equal(
-      ejecutarAccionCoordinada(resuelto.estado, { tipo: "proponer-retruco", jugador: "b" }).aceptada,
+      ejecutarAccionCoordinada(resuelto.estado, { tipo: "proponer-retruco", jugador: "b" })
+        .aceptada,
       true,
     );
   }
@@ -977,7 +978,10 @@ test("§6.1 v1.7: el respondedor puede abrir Envido fuera de turno y conserva Tr
 test("§6.1 v1.7: Envido no cancela Retruco o Vale Cuatro pendiente", () => {
   const { estado } = baseSinFlor();
   const truco = ejecutarAccionCoordinada(estado, { tipo: "proponer-truco", jugador: "a" });
-  const retruco = ejecutarAccionCoordinada(truco.estado, { tipo: "proponer-retruco", jugador: "b" });
+  const retruco = ejecutarAccionCoordinada(truco.estado, {
+    tipo: "proponer-retruco",
+    jugador: "b",
+  });
   const envidoEnRetruco = ejecutarAccionCoordinada(retruco.estado, {
     tipo: "iniciar-envido",
     jugador: "a",
@@ -1030,9 +1034,18 @@ test("§6.1 v1.7: en 2v2 un compañero respondedor abre Envido sin turno", () =>
     ],
   };
   const reparto = [
-    c("espada", 1), c("oro", 4), c("basto", 7), c("copa", 12),
-    c("copa", 2), c("espada", 5), c("oro", 10), c("basto", 1),
-    c("basto", 3), c("copa", 6), c("espada", 11), c("oro", 2),
+    c("espada", 1),
+    c("oro", 4),
+    c("basto", 7),
+    c("copa", 12),
+    c("copa", 2),
+    c("espada", 5),
+    c("oro", 10),
+    c("basto", 1),
+    c("basto", 3),
+    c("copa", 6),
+    c("espada", 11),
+    c("oro", 2),
   ];
   const muestra = c("copa", 7);
   const mano = prepararMano(mesa2v2, "d", [
@@ -1645,6 +1658,95 @@ function estadoConFlorReceptora() {
   );
 }
 
+function propuestaPendienteConFlorRespondedora(nivel) {
+  if (nivel === "truco") {
+    const inicial = estadoConFlorReceptora().estado;
+    const propuesta = ejecutarAccionCoordinada(inicial, { tipo: "proponer-truco", jugador: "a" });
+    return { resultado: propuesta, respondedor: "b" };
+  }
+  if (nivel === "retruco") {
+    const inicial = estadoConManos(
+      [
+        [c("oro", 1), c("oro", 3), c("oro", 6)],
+        [c("espada", 1), c("basto", 3), c("copa", 2)],
+      ],
+      c("espada", 7),
+    ).estado;
+    const truco = ejecutarAccionCoordinada(inicial, { tipo: "proponer-truco", jugador: "a" });
+    const querido = ejecutarAccionCoordinada(truco.estado, { tipo: "quiero-truco", jugador: "b" });
+    return {
+      resultado: ejecutarAccionCoordinada(querido.estado, {
+        tipo: "proponer-retruco",
+        jugador: "b",
+      }),
+      respondedor: "a",
+    };
+  }
+  const inicial = estadoConFlorReceptora().estado;
+  const truco = ejecutarAccionCoordinada(inicial, { tipo: "proponer-truco", jugador: "a" });
+  const querido = ejecutarAccionCoordinada(truco.estado, { tipo: "quiero-truco", jugador: "b" });
+  const retruco = ejecutarAccionCoordinada(querido.estado, {
+    tipo: "proponer-retruco",
+    jugador: "b",
+  });
+  const retrucoQuerido = ejecutarAccionCoordinada(retruco.estado, {
+    tipo: "quiero-retruco",
+    jugador: "a",
+  });
+  return {
+    resultado: ejecutarAccionCoordinada(retrucoQuerido.estado, {
+      tipo: "proponer-vale-cuatro",
+      jugador: "a",
+    }),
+    respondedor: "b",
+  };
+}
+
+test("Flor ordinaria suspende Truco, Retruco y Vale Cuatro sin alterar la propuesta", () => {
+  const casos = [
+    { nivel: "truco", respuesta: "no-quiero-truco", puntosRechazo: 1 },
+    { nivel: "truco", respuesta: "quiero-truco", puntosRechazo: null },
+    { nivel: "retruco", respuesta: "no-quiero-retruco", puntosRechazo: 2 },
+    { nivel: "vale-cuatro", respuesta: "quiero-vale-cuatro", puntosRechazo: null },
+  ];
+  for (const caso of casos) {
+    const { resultado: propuesta, respondedor } = propuestaPendienteConFlorRespondedora(caso.nivel);
+    assert.equal(propuesta.aceptada, true, caso.nivel);
+    const pendienteAntes = propuesta.estado.truco.propuestaPendiente;
+    const turnoAntes = propuesta.estado.juego.jugadorTurno;
+    const flor = ejecutarAccionCoordinada(propuesta.estado, {
+      tipo: "anunciar-flor",
+      jugador: respondedor,
+    });
+    assert.equal(flor.aceptada, true, caso.nivel);
+    assert.deepEqual(flor.estado.truco.propuestaPendiente, pendienteAntes);
+    assert.equal(flor.estado.juego.jugadorTurno, turnoAntes);
+    assert.equal(
+      flor.eventos.some(
+        (evento) => evento.tipo.endsWith("aceptado") || evento.tipo.endsWith("rechazado"),
+      ),
+      false,
+    );
+    assert.deepEqual(
+      flor.estado.flor.adjudicaciones.filter((adjudicacion) => adjudicacion.puntos > 0),
+      [{ equipo: respondedor === "a" ? "A" : "B", puntos: 3, motivo: "sin-desafio" }],
+    );
+    const respuesta = ejecutarAccionCoordinada(flor.estado, {
+      tipo: caso.respuesta,
+      jugador: respondedor,
+    });
+    assert.equal(respuesta.aceptada, true, `${caso.nivel}: ${caso.respuesta}`);
+    assert.equal(respuesta.estado.truco.propuestaPendiente, null);
+    assert.deepEqual(respuesta.estado.flor.adjudicaciones, flor.estado.flor.adjudicaciones);
+    if (caso.puntosRechazo === null) {
+      assert.equal(respuesta.estado.truco.apuestaActiva?.nivel, caso.nivel);
+      assert.equal(respuesta.estado.adjudicacionTruco, null);
+    } else {
+      assert.equal(respuesta.estado.adjudicacionTruco?.puntos, caso.puntosRechazo);
+    }
+  }
+});
+
 test("Con Flor Quiero anuncia fuera de turno y acepta Truco, Retruco y Vale Cuatro", () => {
   const inicial = estadoConFlorReceptora();
   const truco = ejecutarAccionCoordinada(inicial.estado, { tipo: "proponer-truco", jugador: "a" });
@@ -1799,11 +1901,6 @@ test("Con Flor Quiero conserva atomicidad ante precondiciones invalidas", () => 
       .codigo,
     "flor-inexistente",
   );
-  assert.equal(
-    ejecutarAccionCoordinada(propuesta.estado, { tipo: "anunciar-flor", jugador: "b" }).rechazo
-      .codigo,
-    "primer-anuncio-fuera-de-turno",
-  );
 });
 
 test("Con Flor Quiero no recupera derechos perdidos y es determinista", () => {
@@ -1830,6 +1927,11 @@ test("Con Flor Quiero no recupera derechos perdidos y es determinista", () => {
   });
   assert.equal(
     ejecutarAccionCoordinada(propuesta.estado, { tipo: "con-flor-quiero", jugador: "a" }).rechazo
+      .codigo,
+    "derecho-perdido",
+  );
+  assert.equal(
+    ejecutarAccionCoordinada(propuesta.estado, { tipo: "anunciar-flor", jugador: "a" }).rechazo
       .codigo,
     "derecho-perdido",
   );
@@ -2059,14 +2161,27 @@ test("irse al mazo 1v1 es válido fuera del turno de carta", () => {
 test("irse al mazo cierra una segunda baza iniciada después de Truco aceptado", () => {
   const { mano, estado: inicial } = estadoConManos(
     [
-      [c("copa", 4), c("oro", 5), c("basto", 6)],
-      [c("espada", 1), c("espada", 3), c("oro", 7)],
+      [c("oro", 3), c("copa", 10), c("basto", 12)],
+      [c("espada", 7), c("espada", 3), c("oro", 1)],
     ],
-    c("basto", 7),
+    c("copa", 7),
   );
   const cartaDe = (estado, jugador) =>
     estado.juego.cartasDisponibles.find((item) => item.jugador === jugador).cartas[0];
-  const primeraA = ejecutarAccionCoordinada(inicial, {
+  const envido = ejecutarAccionCoordinada(inicial, {
+    tipo: "iniciar-envido",
+    jugador: "a",
+    canto: "envido",
+  });
+  assert.equal(envido.aceptada, true);
+  const envidoAceptado = ejecutarAccionCoordinada(envido.estado, {
+    tipo: "quiero-envido",
+    jugador: "b",
+  });
+  assert.equal(envidoAceptado.aceptada, true);
+  assert.equal(envidoAceptado.estado.envido.resueltos.length, 1);
+  assert.equal(envidoAceptado.estado.envido.resueltos[0].puntos, 2);
+  const primeraA = ejecutarAccionCoordinada(envidoAceptado.estado, {
     tipo: "jugar-carta",
     jugador: "a",
     carta: mano.manos.find((item) => item.jugador === "a").cartas[0],
@@ -2093,7 +2208,10 @@ test("irse al mazo cierra una segunda baza iniciada después de Truco aceptado",
   });
   assert.equal(iniciaSegunda.aceptada, true);
   assert.equal(iniciaSegunda.estado.juego.jugadorTurno, "a");
-  assert.equal(iniciaSegunda.estado.juego.cartasDisponibles.find((item) => item.jugador === "a").cartas.length, 2);
+  assert.equal(
+    iniciaSegunda.estado.juego.cartasDisponibles.find((item) => item.jugador === "a").cartas.length,
+    2,
+  );
   const retiro = ejecutarAccionCoordinada(iniciaSegunda.estado, {
     tipo: "irse-al-mazo",
     jugador: "a",
@@ -2103,6 +2221,35 @@ test("irse al mazo cierra una segunda baza iniciada después de Truco aceptado",
   assert.equal(retiro.estado.juego.motivoFinalizacion, "mazo");
   assert.equal(retiro.estado.liquidacionMazo.puntos, "pendiente");
   assert.equal(retiro.estado.truco.apuestaActiva.nivel, "truco");
+  const liquidacion = ejecutarAccionCoordinada(retiro.estado, { tipo: "liquidar-puntos-mazo" });
+  assert.equal(liquidacion.aceptada, true, liquidacion.aceptada ? "" : liquidacion.rechazo.codigo);
+  assert.equal(esEstadoJuegoCartasValido(liquidacion.estado.juego), true, "juego liquidado");
+  assert.equal(
+    esCicloCoherenteConEstado(
+      liquidacion.estado.ciclo,
+      liquidacion.estado.juego,
+      liquidacion.estado.resultadoPartida,
+      liquidacion.estado.liquidacionMazo,
+      liquidacion.estado.flor,
+      liquidacion.estado.truco,
+      liquidacion.estado.envido,
+      liquidacion.estado.adjudicacionTruco,
+    ),
+    true,
+    "ciclo liquidado",
+  );
+  const cierre = ejecutarAccionCoordinada(liquidacion.estado, { tipo: "cerrar-mano-mazo" });
+  assert.equal(cierre.aceptada, true, cierre.aceptada ? "" : cierre.rechazo.codigo);
+  assert.equal(cierre.estado.ciclo.fase, "cierre-definitivo");
+  const repetido = ejecutarAccionCoordinada(cierre.estado, { tipo: "irse-al-mazo", jugador: "a" });
+  assert.equal(repetido.aceptada, false);
+  assert.equal(repetido.rechazo.codigo, "mano-finalizada");
+  const contabilizada = motor.contabilizarManoCerrada(motor.crearEstadoPartida(cierre.estado));
+  assert.equal(contabilizada.aceptada, true);
+  assert.deepEqual(contabilizada.estado.puntajes, { A: 2, B: 2 });
+  const siguiente = motor.siguienteMano(contabilizada.estado, crearMazo());
+  assert.equal(siguiente.aceptada, true);
+  assert.equal(siguiente.estado.ordinalMano, 2);
 });
 
 test("irse al mazo no confunde una fase de Flor abierta sin desafío pendiente", () => {

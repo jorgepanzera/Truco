@@ -54,11 +54,17 @@ export type EventoEnvido =
   | Readonly<{ tipo: "envido-aumentado"; cadena: CadenaEnvidoPendiente }>
   | Readonly<{
       tipo: "envido-aceptado";
+      respondedor: string;
       adjudicacion: AdjudicacionEnvido;
       tantos: ResultadoComparacionEnvido["tantos"];
     }>
   | Readonly<{
-      tipo: "envido-rechazado" | "envido-rechazo-implicito-por-retiro";
+      tipo: "envido-rechazado";
+      respondedor: string;
+      adjudicacion: AdjudicacionEnvido;
+    }>
+  | Readonly<{
+      tipo: "envido-rechazo-implicito-por-retiro";
       adjudicacion: AdjudicacionEnvido;
     }>
   | Readonly<{ tipo: "envido-cancelado-por-flor"; cancelacion: CancelacionEnvidoPorFlor }>
@@ -492,7 +498,13 @@ export function responderNoQuiero(
       pendiente: null,
       resueltos: [...estado.resueltos, rechazarEnvido(estado.pendiente)],
     },
-    eventos: [{ tipo: "envido-rechazado", adjudicacion: rechazarEnvido(estado.pendiente) }],
+    eventos: [
+      {
+        tipo: "envido-rechazado",
+        respondedor: jugador,
+        adjudicacion: rechazarEnvido(estado.pendiente),
+      },
+    ],
   };
 }
 
@@ -536,7 +548,14 @@ export function responderQuiero(
   return {
     aceptada: true,
     estado: { ...estado, pendiente: null, resueltos: [...estado.resueltos, resultado] },
-    eventos: [{ tipo: "envido-aceptado", adjudicacion: resultado, tantos: comparacion.tantos }],
+    eventos: [
+      {
+        tipo: "envido-aceptado",
+        respondedor: jugador,
+        adjudicacion: resultado,
+        tantos: comparacion.tantos,
+      },
+    ],
   };
 }
 
